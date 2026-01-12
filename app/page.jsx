@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, Inbox, Calendar, Timer, Sunrise } from 'lucide-react';
+import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, Inbox, Calendar, Timer, Sunrise, Copy, Settings, RefreshCw } from 'lucide-react';
 
 // Themes
 const themes = {
@@ -54,45 +54,50 @@ const celebrationMessages = [
 // API call function - uses server-side API route
 async function callClaude(apiKey, model, systemPrompt, userMessage) {
   // Try server-side API first (more secure)
-  const response = await fetch('/api/claude', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      system: systemPrompt,
-      prompt: userMessage,
-    }),
-  });
-  
-  const data = await response.json();
-  
-  if (data.error) {
-    // Fallback to direct API call if server route fails and we have a key
-    if (apiKey) {
-      const directResponse = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 1024,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userMessage }],
-        }),
-      });
-      const directData = await directResponse.json();
-      return directData.content?.[0]?.text || '';
+  try {
+    const response = await fetch('/api/claude', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        system: systemPrompt,
+        prompt: userMessage,
+      }),
+    });
+    
+    const data = await response.json();
+    
+    if (!data.error) {
+      return data.content;
     }
-    throw new Error(data.error);
+  } catch (e) {
+    // Fall through to direct API
   }
   
-  return data.content;
+  // Fallback to direct API call if server route fails and we have a key
+  if (apiKey) {
+    const directResponse = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+    });
+    const directData = await directResponse.json();
+    return directData.content?.[0]?.text || '';
+  }
+  
+  throw new Error('API call failed');
 }
 
 // Confetti component
@@ -140,8 +145,6 @@ export default function ADHDo() {
   const [loading, setLoading] = useState(false);
   const [weather, setWeather] = useState(null);
   const [weatherLoading, setWeatherLoading] = useState(false);
-  const [microSteps, setMicroSteps] = useState(null);
-  const [currentStep, setCurrentStep] = useState(0);
   const [sections, setSections] = useState({ void: true, today: true, tomorrow: true, week: true, later: true });
   const [customOrder, setCustomOrder] = useState({});
   const [draggedTask, setDraggedTask] = useState(null);
@@ -151,6 +154,7 @@ export default function ADHDo() {
   const [quickAddText, setQuickAddText] = useState('');
   const [selectedTask, setSelectedTask] = useState(null);
   const [whenPickerTask, setWhenPickerTask] = useState(null);
+  const [suggestionTaskIds, setSuggestionTaskIds] = useState(null); // Track which tasks the suggestion is based on
 
   const hour = new Date().getHours();
   const isEvening = hour >= settings.eveningHour;
@@ -180,6 +184,25 @@ export default function ADHDo() {
   useEffect(() => {
     localStorage.setItem('adhdo-order', JSON.stringify(customOrder));
   }, [customOrder]);
+
+  // Auto-fetch suggestion when tasks change or on first load with API key
+  const taskIdsRef = useRef(null);
+  useEffect(() => {
+    const incompleteTasks = tasks.filter(t => !t.completed);
+    const currentIds = incompleteTasks.map(t => t.id).sort().join(',');
+    
+    // Only fetch if we have an API key, tasks exist, and task list has changed
+    if (settings.apiKey && incompleteTasks.length > 0 && currentIds !== taskIdsRef.current) {
+      taskIdsRef.current = currentIds;
+      // Small delay to batch rapid changes
+      const timeout = setTimeout(() => {
+        if (!suggestion || !incompleteTasks.find(t => t.id === suggestion.task?.id)) {
+          getSuggestion();
+        }
+      }, 500);
+      return () => clearTimeout(timeout);
+    }
+  }, [tasks, settings.apiKey]);
 
   // Fetch weather
   const fetchWeather = () => {
@@ -280,35 +303,55 @@ export default function ADHDo() {
     setLoading(true);
     try {
       const now = new Date();
-      const systemPrompt = `You are an ADHD-friendly task assistant. Pick ONE task from the provided priority pool. These are already filtered by priority - just pick the best one to do right now. Be supportive, never judgmental.
+      const systemPrompt = `You are an ADHD-friendly task assistant. Your goal is to help batch similar tasks together to build momentum.
 
-Rules:
-- If evening (after 7pm), prefer home/computer tasks if available
-- Look for batching opportunities within the pool
-- Quick wins build momentum`;
+FIRST: Look at ALL tasks (not just priority pool) and find groups of 2-3 related tasks that could be done together. Look for:
+- Same action type: "Call Jim", "Call bank", "Call mom" → batch as "Phone calls"
+- Same location/context: "order plant", "order flooring" → batch as "Online ordering"  
+- Same category: "empty trash", "dishes", "vacuum" → batch as "Quick home tasks"
+- Same errand area: "CVS", "grocery store" → batch as "Errands"
+
+THEN: Pick the best group or single task to suggest right now.
+
+If you find a good group, suggest the primary task and include related tasks as "batch" items.
+If no good groupings exist, just pick the best single task from the priority pool.
+
+Be supportive, never judgmental. Quick wins build momentum!`;
 
       const userPrompt = `Time: ${now.toLocaleTimeString()}
 Day: ${now.toLocaleDateString('en-US', { weekday: 'long' })}
 Evening mode: ${isEvening}
 Weather: ${weather ? `${weather.temp}°F ${weather.icon}` : 'unknown'}
-Pool: ${poolName}
 
-Tasks to choose from:
+PRIORITY POOL (${poolName}) - prefer tasks from here:
 ${priorityPool.map(t => `- ID: ${t.id} | "${t.text}" | urgent: ${t.urgent || false}`).join('\n')}
 
+ALL OTHER TASKS (can batch with priority tasks if related):
+${incomplete.filter(t => !priorityPool.includes(t)).map(t => `- ID: ${t.id} | "${t.text}" | section: ${t.doDate ? (t.doDate <= todayDate ? 'today' : t.doDate === tomorrowDate ? 'tomorrow' : t.doDate <= weekEndDate ? 'week' : 'later') : 'void'}`).join('\n')}
+
 Return ONLY JSON:
-{"taskId":"...","headline":"motivating 5-10 words","subtitle":"supportive message","bonusTaskId":null or "..." (only from same pool),"bonusReason":"why batch"}`;
+{
+  "taskId": "primary task ID from priority pool",
+  "headline": "motivating 5-10 words. NO HYPHENS OR DASHES. Use colons if needed. (e.g. 'Phone call power hour!' or 'Time to knock these out')",
+  "subtitle": "supportive message",
+  "batchTaskIds": ["id1", "id2"] or [] (up to 2 related tasks from ANY section to do together),
+  "batchReason": "short label like 'Phone calls' or 'Quick wins'" or null
+}`;
 
       const response = await callClaude(settings.apiKey, 'claude-sonnet-4-20250514', systemPrompt, userPrompt);
       const match = response.match(/\{[\s\S]*\}/);
       if (match) {
         const data = JSON.parse(match[0]);
+        const batchTasks = (data.batchTaskIds || [])
+          .map(id => tasks.find(t => t.id === id))
+          .filter(Boolean);
+        
         setSuggestion({
           task: tasks.find(t => t.id === data.taskId) || priorityPool[0],
           headline: data.headline,
           subtitle: data.subtitle,
-          bonus: data.bonusTaskId ? tasks.find(t => t.id === data.bonusTaskId) : null,
-          bonusReason: data.bonusReason,
+          batchTasks: batchTasks,
+          batchReason: data.batchReason,
         });
       }
     } catch (e) {
@@ -318,25 +361,68 @@ Return ONLY JSON:
         task: priorityPool[0],
         headline: priorityPool[0].urgent ? "🔥 This one's urgent!" : "Let's knock this out",
         subtitle: "You've got this!",
+        batchTasks: [],
       });
     }
     setLoading(false);
   };
 
   // AI: Parse tasks from natural language
-  const parseTasks = async (text) => {
+  const parseTasks = async (text, totalTasksAddedSoFar = 0, existingTasks = []) => {
     if (!settings.apiKey) return { tasks: [], response: "Add your API key in settings first!" };
 
-    const systemPrompt = `Parse tasks from natural language. Be a supportive friend with ADHD - funny, warm, real.
+    // Get existing incomplete tasks for duplicate/merge detection
+    const incompleteTasks = tasks.filter(t => !t.completed);
+    const existingTasksList = incompleteTasks.map(t => ({
+      id: t.id,
+      text: t.text,
+      category: t.category,
+      subtasks: t.subtasks?.map(st => st.text) || []
+    }));
+
+    const systemPrompt = `Parse tasks from natural language. You're a warm, witty friend who truly gets ADHD brains.
 
 Categories: phone, errand, cleaning, medical, financial, work, shopping, home
-Locations: home, out, either`;
+Locations: home, out, either
+
+IMPORTANT: If the user mentions needing to get/buy multiple items as part of ONE task, create ONE task with subtasks.
+Example: "go to health food store to get beans, bread and butter" becomes:
+{"text":"Go to health food store","subtasks":["beans","bread","butter"],...}
+
+DUPLICATE/MERGE DETECTION:
+- Check if the new task is a DUPLICATE of an existing task (same or very similar text)
+- Check if the new task could MERGE with an existing task (same action type like "order X" + "order Y", or same location/errand)
+- If you detect a potential duplicate or merge, set "mergePrompt" with a friendly question
+- Include "mergeWithId" (the existing task ID) and "mergeType" ("duplicate" or "combine")
+
+Examples:
+- User has "order green tea", adds "order guitar hooks" → suggest merging into one "Online orders" task
+- User has "call mom", adds "call mom" → duplicate detected
+- User has "CVS", adds "pick up prescription" → could merge as same errand
+
+PERSONALITY RULES FOR YOUR RESPONSE:
+- If they're adding a LOT of tasks (5+): acknowledge it warmly
+- If they mention something emotionally heavy: be genuinely empathetic
+- If they add something fun or self-care: celebrate it!
+- Keep responses SHORT - one sentence, maybe two max
+- Sound human, not like a corporate chatbot`;
 
     const userPrompt = `Today: ${new Date().toISOString().split('T')[0]}
+Tasks already added this session: ${totalTasksAddedSoFar}
 User said: "${text}"
 
+EXISTING TASKS (check for duplicates/merge opportunities):
+${existingTasksList.length > 0 ? existingTasksList.map(t => `- ID: ${t.id} | "${t.text}" | category: ${t.category}${t.subtasks.length ? ` | subtasks: ${t.subtasks.join(', ')}` : ''}`).join('\n') : '(none)'}
+
 Return ONLY JSON:
-{"tasks":[{"text":"...","doDate":"YYYY-MM-DD or null","category":"...","location":"..."}],"response":"friendly ADHD-supportive acknowledgment"}`;
+{
+  "tasks":[{"text":"...","doDate":"YYYY-MM-DD or null","category":"...","location":"...","subtasks":[]}],
+  "response":"your warm, context-aware response",
+  "mergePrompt": null or "I noticed you already have 'order green tea' - want me to combine these into one ordering task?",
+  "mergeWithId": null or "existing-task-id",
+  "mergeType": null or "duplicate" or "combine",
+  "mergeSubtask": null or "the item to add as subtask if combining"
+}`;
 
     try {
       const response = await callClaude(settings.apiKey, 'claude-haiku-4-5-20251001', systemPrompt, userPrompt);
@@ -346,32 +432,6 @@ Return ONLY JSON:
       console.error(e);
     }
     return { tasks: [], response: "Hmm, something went wrong. Try again?" };
-  };
-
-  // AI: Generate micro steps
-  const getMicroSteps = async (task) => {
-    if (!settings.apiKey) return null;
-    setLoading(true);
-
-    const systemPrompt = `Break tasks into TINY 2-5 minute steps for ADHD brains. First step should be SO small it's impossible not to do.`;
-    const userPrompt = `Task: "${task.text}"
-Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
-
-    try {
-      const response = await callClaude(settings.apiKey, 'claude-sonnet-4-20250514', systemPrompt, userPrompt);
-      const match = response.match(/\[[\s\S]*\]/);
-      if (match) {
-        setMicroSteps({ task, steps: JSON.parse(match[0]) });
-        setCurrentStep(0);
-      }
-    } catch (e) {
-      setMicroSteps({
-        task,
-        steps: ["Take a deep breath", "Gather what you need", "Do the smallest part first", "Keep going!", "You did it! 🎉"]
-      });
-      setCurrentStep(0);
-    }
-    setLoading(false);
   };
 
   // Task actions
@@ -385,6 +445,7 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
       doDate: taskData.doDate || null,
       category: taskData.category || 'general',
       location: taskData.location || 'either',
+      subtasks: (taskData.subtasks || []).map(st => ({ text: st, completed: false })),
     };
     setTasks(prev => [...prev, newTask]);
   };
@@ -400,6 +461,17 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
   const deleteTask = (id) => setTasks(tasks.filter(t => t.id !== id));
   const toggleUrgent = (id) => setTasks(tasks.map(t => t.id === id ? { ...t, urgent: !t.urgent } : t));
   const skipTask = () => getSuggestion();
+  
+  const toggleSubtask = (taskId, subtaskIndex) => {
+    setTasks(tasks.map(t => {
+      if (t.id === taskId && t.subtasks) {
+        const newSubtasks = [...t.subtasks];
+        newSubtasks[subtaskIndex] = { ...newSubtasks[subtaskIndex], completed: !newSubtasks[subtaskIndex].completed };
+        return { ...t, subtasks: newSubtasks };
+      }
+      return t;
+    }));
+  };
   
   const updateTask = (id, updates) => {
     setTasks(tasks.map(t => t.id === id ? { ...t, ...updates } : t));
@@ -610,10 +682,49 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
     <div style={{
       minHeight: '100vh',
       backgroundColor: theme.bg,
-      fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       color: theme.text,
       transition: 'background-color 0.3s, color 0.3s',
     }}>
+      <style>{`
+        @keyframes fall {
+          0% { opacity: 1; transform: translateY(0) rotate(0deg); }
+          100% { opacity: 0; transform: translateY(100vh) rotate(720deg); }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+        @keyframes glow {
+          0%, 100% { opacity: 0.4; }
+          50% { opacity: 1; }
+        }
+        @keyframes rainbow {
+          0% { background-position: 0% 50%; }
+          100% { background-position: 200% 50%; }
+        }
+        @keyframes twinkle {
+          0%, 100% { opacity: 0.3; }
+          50% { opacity: 1; }
+        }
+        @keyframes floatLR {
+          0% { transform: translateX(-50px) rotate(0deg); opacity: 0; }
+          3% { opacity: 0.5; }
+          97% { opacity: 0.5; }
+          100% { transform: translateX(600px) rotate(360deg); opacity: 0; }
+        }
+        @keyframes floatRL {
+          0% { transform: translateX(600px) rotate(0deg); opacity: 0; }
+          3% { opacity: 0.5; }
+          97% { opacity: 0.5; }
+          100% { transform: translateX(-50px) rotate(-360deg); opacity: 0; }
+        }
+        @keyframes cardGlow {
+          0%, 100% { opacity: 0.5; transform: scale(1); }
+          50% { opacity: 1; transform: scale(1.01); }
+        }
+        * { box-sizing: border-box; }
+      `}</style>
 
       {/* Header */}
       <header style={{
@@ -658,9 +769,11 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
           <button onClick={() => setShowSettings(true)} style={{
             background: 'none',
             border: 'none',
-            fontSize: 20,
             cursor: 'pointer',
-          }}>⚙️</button>
+            padding: 4,
+            display: 'flex',
+            alignItems: 'center',
+          }}><Settings size={20} color={theme.textMuted} /></button>
         </div>
       </header>
 
@@ -737,57 +850,116 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                 </p>
 
                 {/* Main task card */}
-                <button 
-                  onClick={() => getMicroSteps(suggestion.task)}
+                <div 
                   style={{
                     width: '100%',
                     padding: '20px 24px',
                     backgroundColor: theme.cardBg,
-                    border: 'none',
                     borderRadius: 16,
                     marginBottom: 12,
-                    textAlign: 'left',
-                    cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
-                    justifyContent: 'space-between',
                     gap: 16,
                     boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+                    color: theme.text,
                   }}>
-                  <div style={{ fontSize: 20, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {suggestion.task.urgent && <span>🔥</span>}
-                    {suggestion.task.text}
-                  </div>
-                  <span style={{ fontSize: 20, color: theme.textMuted }}>›</span>
-                </button>
-
-                {/* Bonus task */}
-                {suggestion.bonus && (
-                  <button
-                    onClick={() => getMicroSteps(suggestion.bonus)}
+                  <button 
+                    onClick={() => completeTask(suggestion.task.id)}
                     style={{
-                      width: '100%',
-                      padding: '16px 20px',
-                      backgroundColor: theme.cardBg,
-                      border: `2px dashed ${theme.border}`,
-                      borderRadius: 16,
-                      textAlign: 'left',
+                      width: 28,
+                      height: 28,
+                      borderRadius: 8,
+                      border: `2px solid ${theme.border}`,
+                      background: 'none',
                       cursor: 'pointer',
+                      flexShrink: 0,
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 16,
-                      boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+                      justifyContent: 'center',
                     }}
                   >
-                    <div>
-                      <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 4, letterSpacing: 0.5 }}>
-                        ⚡ BONUS — {suggestion.bonusReason || "while you're at it"}
-                      </div>
-                      <div style={{ fontSize: 17, fontWeight: 500 }}>{suggestion.bonus.text}</div>
-                    </div>
-                    <span style={{ fontSize: 20, color: theme.textMuted }}>›</span>
+                    <Check size={16} color={theme.textMuted} style={{ opacity: 0.5 }} />
                   </button>
+                  <button
+                    onClick={() => setSelectedTask(suggestion.task)}
+                    style={{
+                      flex: 1,
+                      background: 'none',
+                      border: 'none',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      padding: 0,
+                      color: theme.text,
+                    }}
+                  >
+                    <div style={{ fontSize: 20, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {suggestion.task.urgent && <span>🔥</span>}
+                      {suggestion.task.text}
+                    </div>
+                    {suggestion.task.subtasks && suggestion.task.subtasks.length > 0 && (
+                      <div style={{ fontSize: 13, color: theme.textMuted, marginTop: 4 }}>
+                        {suggestion.task.subtasks.filter(st => st.completed).length}/{suggestion.task.subtasks.length} items
+                      </div>
+                    )}
+                  </button>
+                </div>
+
+                {/* Batch tasks */}
+                {suggestion.batchTasks && suggestion.batchTasks.length > 0 && (
+                  <div style={{
+                    width: '100%',
+                    padding: '8px 24px',
+                    backgroundColor: theme.cardBg,
+                    borderRadius: 16,
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+                  }}>
+                    {suggestion.batchTasks.map((batchTask) => (
+                      <div
+                        key={batchTask.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 16,
+                          padding: '12px 0',
+                          color: theme.text,
+                        }}
+                      >
+                        <button 
+                          onClick={() => completeTask(batchTask.id)}
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: 8,
+                            border: `2px solid ${theme.border}`,
+                            background: 'none',
+                            cursor: 'pointer',
+                            flexShrink: 0,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <Check size={16} color={theme.textMuted} style={{ opacity: 0.5 }} />
+                        </button>
+                        <button
+                          onClick={() => setSelectedTask(batchTask)}
+                          style={{
+                            flex: 1,
+                            background: 'none',
+                            border: 'none',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            padding: 0,
+                            color: theme.text,
+                            fontSize: 20,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {batchTask.text}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 )}
 
                 <button onClick={getSuggestion} style={{
@@ -797,7 +969,10 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                   fontSize: 15,
                   color: theme.textMuted,
                   cursor: 'pointer',
-                }}>🎲 Suggest something else</button>
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}><RefreshCw size={14} /> Surprise me</button>
               </div>
             ) : (
               <div style={{ 
@@ -808,16 +983,9 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                 justifyContent: 'center',
                 minHeight: 'calc(100vh - 280px)',
               }}>
-                <button onClick={getSuggestion} style={{
-                  padding: '16px 32px',
-                  backgroundColor: theme.accent,
-                  color: theme.accentText,
-                  border: 'none',
-                  borderRadius: 50,
-                  fontSize: 16,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}>Give me a suggestion</button>
+                <p style={{ fontSize: 16, color: theme.textMuted }}>
+                  Add some tasks to get started
+                </p>
               </div>
             )}
           </div>
@@ -849,7 +1017,7 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                   marginBottom: section.key === 'void' ? '24px' : '8px',
                   borderRadius: section.key === 'void' ? 16 : 12,
                   backgroundColor: section.key === 'void' 
-                    ? '#0d0d14' 
+                    ? '#111111' 
                     : (dragOverSection === section.key ? theme.bgSecondary : 'transparent'),
                   border: dragOverSection === section.key && section.key !== 'void' 
                     ? `2px dashed ${theme.border}` 
@@ -1054,10 +1222,10 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                           style={{
                             display: 'flex',
                             alignItems: 'center',
-                            padding: '16px 20px',
+                            padding: '18px 20px',
                             backgroundColor: theme.cardBg,
                             borderRadius: 12,
-                            marginBottom: 4,
+                            marginBottom: 6,
                             gap: 14,
                             boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
                             cursor: 'grab',
@@ -1086,6 +1254,41 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                               }}>
                                 Due {new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                               </span>
+                            )}
+                            {task.subtasks && task.subtasks.length > 0 && (
+                              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                {task.subtasks.map((st, stIndex) => (
+                                  <div 
+                                    key={stIndex}
+                                    onClick={(e) => { e.stopPropagation(); toggleSubtask(task.id, stIndex); }}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 8,
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    <div style={{
+                                      width: 16,
+                                      height: 16,
+                                      borderRadius: 4,
+                                      border: `1.5px solid ${theme.border}`,
+                                      backgroundColor: st.completed ? theme.accent : 'transparent',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      flexShrink: 0,
+                                    }}>
+                                      {st.completed && <Check size={10} color={theme.accentText} />}
+                                    </div>
+                                    <span style={{
+                                      fontSize: 14,
+                                      color: st.completed ? theme.textMuted : theme.textSecondary,
+                                      textDecoration: st.completed ? 'line-through' : 'none',
+                                    }}>{st.text}</span>
+                                  </div>
+                                ))}
+                              </div>
                             )}
                           </div>
                           {section.key === 'void' && (
@@ -1165,6 +1368,7 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
         alignItems: 'center',
         gap: 8,
         border: `1px solid ${theme.border}`,
+        zIndex: 50,
       }}>
         <button onClick={() => setActiveTab('now')} style={{
           padding: '14px 22px',
@@ -1210,6 +1414,15 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
           onClose={() => setShowChat(false)}
           onParseTasks={parseTasks}
           onAddTask={addTask}
+          onMergeTask={(taskId, subtaskText) => {
+            setTasks(tasks.map(t => {
+              if (t.id === taskId) {
+                const newSubtasks = [...(t.subtasks || []), { text: subtaskText, completed: false }];
+                return { ...t, subtasks: newSubtasks };
+              }
+              return t;
+            }));
+          }}
         />
       )}
 
@@ -1269,7 +1482,6 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                 { key: 'today', label: 'Today' },
                 { key: 'tomorrow', label: 'Tomorrow' },
                 { key: 'weekend', label: 'This weekend' },
-                { key: 'nextweek', label: 'Next week' },
                 { key: 'later', label: 'Later' },
               ].map(option => (
                 <button
@@ -1345,84 +1557,6 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
         </div>
       )}
 
-      {/* Micro Steps */}
-      {microSteps && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          backgroundColor: 'rgba(0,0,0,0.6)',
-          zIndex: 100,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          backdropFilter: 'blur(8px)',
-        }}>
-          <div style={{
-            backgroundColor: theme.cardBg,
-            borderRadius: 20,
-            padding: 40,
-            maxWidth: 450,
-            width: '90%',
-            position: 'relative',
-          }}>
-            <button onClick={() => setMicroSteps(null)} style={{
-              position: 'absolute',
-              top: 16,
-              right: 16,
-              background: 'none',
-              border: 'none',
-              fontSize: 24,
-              color: theme.textMuted,
-              cursor: 'pointer',
-            }}>×</button>
-            
-            <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 8 }}>
-              Step {currentStep + 1} of {microSteps.steps.length}
-            </div>
-            <div style={{
-              height: 4,
-              backgroundColor: theme.border,
-              borderRadius: 2,
-              marginBottom: 28,
-              overflow: 'hidden',
-            }}>
-              <div style={{
-                height: '100%',
-                backgroundColor: theme.success,
-                width: `${((currentStep + 1) / microSteps.steps.length) * 100}%`,
-                transition: 'width 0.3s',
-              }} />
-            </div>
-            
-            <div style={{ fontSize: 24, fontWeight: 500, marginBottom: 32, lineHeight: 1.4 }}>
-              {microSteps.steps[currentStep]}
-            </div>
-            
-            <button onClick={() => {
-              if (currentStep < microSteps.steps.length - 1) {
-                setCurrentStep(s => s + 1);
-              } else {
-                completeTask(microSteps.task.id);
-                setMicroSteps(null);
-                setCurrentStep(0);
-              }
-            }} style={{
-              width: '100%',
-              padding: 16,
-              backgroundColor: theme.accent,
-              color: theme.accentText,
-              border: 'none',
-              borderRadius: 10,
-              fontSize: 16,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}>
-              {currentStep < microSteps.steps.length - 1 ? 'Done — Next →' : 'Complete! 🎉'}
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Task Detail Modal */}
       {selectedTask && (
         <div 
@@ -1442,27 +1576,33 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
             style={{
               backgroundColor: theme.cardBg,
               borderRadius: '24px 24px 0 0',
-              padding: '32px 28px 48px',
+              padding: '12px 28px 48px',
               width: '100%',
               maxWidth: 480,
               maxHeight: '80vh',
               overflowY: 'auto',
             }}
           >
-            {/* Drag handle + urgent */}
+            {/* Drag handle */}
             <div style={{ 
               display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 28,
+              justifyContent: 'center',
+              marginBottom: 20,
             }}>
-              <div style={{ width: 44 }} />
               <div style={{ 
                 width: 36, 
                 height: 4, 
                 backgroundColor: theme.border, 
                 borderRadius: 2, 
               }} />
+            </div>
+            
+            {/* Urgent button */}
+            <div style={{ 
+              display: 'flex',
+              justifyContent: 'flex-end',
+              marginBottom: 12,
+            }}>
               <button
                 onClick={() => toggleUrgent(selectedTask.id)}
                 style={{
@@ -1540,7 +1680,15 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                   }}
                 />
                 {selectedTask.phone && (
-                  <a href={`tel:${selectedTask.phone}`} style={{ color: theme.textMuted, textDecoration: 'none', fontSize: 14 }}>Call →</a>
+                  <>
+                    <button 
+                      onClick={() => navigator.clipboard.writeText(selectedTask.phone)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+                    >
+                      <Copy size={16} color={theme.textMuted} />
+                    </button>
+                    <a href={`tel:${selectedTask.phone}`} style={{ color: theme.textMuted, textDecoration: 'none', fontSize: 14 }}>Call →</a>
+                  </>
                 )}
               </div>
 
@@ -1564,7 +1712,15 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                   }}
                 />
                 {selectedTask.url && (
-                  <a href={selectedTask.url.startsWith('http') ? selectedTask.url : `https://${selectedTask.url}`} target="_blank" rel="noreferrer" style={{ color: theme.textMuted, textDecoration: 'none', fontSize: 14 }}>Open →</a>
+                  <>
+                    <button 
+                      onClick={() => navigator.clipboard.writeText(selectedTask.url)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+                    >
+                      <Copy size={16} color={theme.textMuted} />
+                    </button>
+                    <a href={selectedTask.url.startsWith('http') ? selectedTask.url : `https://${selectedTask.url}`} target="_blank" rel="noreferrer" style={{ color: theme.textMuted, textDecoration: 'none', fontSize: 14 }}>Open →</a>
+                  </>
                 )}
               </div>
 
@@ -1588,7 +1744,15 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                   }}
                 />
                 {selectedTask.address && (
-                  <a href={`https://maps.google.com/?q=${encodeURIComponent(selectedTask.address)}`} target="_blank" rel="noreferrer" style={{ color: theme.textMuted, textDecoration: 'none', fontSize: 14 }}>Map →</a>
+                  <>
+                    <button 
+                      onClick={() => navigator.clipboard.writeText(selectedTask.address)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+                    >
+                      <Copy size={16} color={theme.textMuted} />
+                    </button>
+                    <a href={`https://maps.google.com/?q=${encodeURIComponent(selectedTask.address)}`} target="_blank" rel="noreferrer" style={{ color: theme.textMuted, textDecoration: 'none', fontSize: 14 }}>Map →</a>
+                  </>
                 )}
               </div>
 
@@ -1614,6 +1778,89 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
                   }}
                 />
               </div>
+
+              {/* Subtasks */}
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 12, fontWeight: 500 }}>Items</div>
+                
+                {/* Existing subtasks */}
+                {(selectedTask.subtasks || []).map((st, stIndex) => (
+                  <div 
+                    key={stIndex}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: '8px 0',
+                    }}
+                  >
+                    <button
+                      onClick={() => toggleSubtask(selectedTask.id, stIndex)}
+                      style={{
+                        width: 20,
+                        height: 20,
+                        borderRadius: 4,
+                        border: `2px solid ${st.completed ? theme.accent : theme.border}`,
+                        backgroundColor: st.completed ? theme.accent : 'transparent',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {st.completed && <Check size={12} color={theme.accentText} />}
+                    </button>
+                    <span style={{
+                      flex: 1,
+                      fontSize: 15,
+                      color: st.completed ? theme.textMuted : theme.text,
+                      textDecoration: st.completed ? 'line-through' : 'none',
+                    }}>{st.text}</span>
+                    <button
+                      onClick={() => {
+                        const newSubtasks = selectedTask.subtasks.filter((_, i) => i !== stIndex);
+                        updateTask(selectedTask.id, { subtasks: newSubtasks });
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: theme.textMuted,
+                        cursor: 'pointer',
+                        padding: 4,
+                        opacity: 0.5,
+                      }}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+                
+                {/* Add new subtask */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+                  <Plus size={20} color={theme.textMuted} style={{ opacity: 0.5 }} />
+                  <input
+                    type="text"
+                    placeholder="Add item..."
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && e.target.value.trim()) {
+                        const newSubtasks = [...(selectedTask.subtasks || []), { text: e.target.value.trim(), completed: false }];
+                        updateTask(selectedTask.id, { subtasks: newSubtasks });
+                        e.target.value = '';
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '8px 0',
+                      border: 'none',
+                      fontSize: 15,
+                      backgroundColor: 'transparent',
+                      color: theme.text,
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+              </div>
             </div>
 
             
@@ -1625,17 +1872,49 @@ Return ONLY a JSON array of 4-6 steps: ["step1", "step2", ...]`;
 }
 
 // Chat Modal Component
-function ChatModal({ theme, onClose, onParseTasks, onAddTask }) {
+function ChatModal({ theme, onClose, onParseTasks, onAddTask, onMergeTask }) {
   const [messages, setMessages] = useState([
-    { from: 'ai', text: "Brain dump time! Tell me everything. 🧠" }
+    { from: 'ai', text: "Throw it all in here. I'll catch it. ✨" }
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [totalTasksAdded, setTotalTasksAdded] = useState(0);
+  const [pendingMerge, setPendingMerge] = useState(null);
+  const [stars] = useState(() => Array.from({ length: 50 }, () => ({
+    top: `${Math.random() * 100}%`,
+    left: `${Math.random() * 100}%`,
+    size: Math.random() > 0.7 ? 2 : 1,
+    opacity: 0.3 + Math.random() * 0.7,
+    duration: 2 + Math.random() * 3,
+    delay: Math.random() * 2,
+  })));
   const ref = useRef(null);
 
   useEffect(() => {
     if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
   }, [messages]);
+
+  const handleMergeResponse = (shouldMerge) => {
+    if (!pendingMerge) return;
+    
+    if (shouldMerge) {
+      onMergeTask(pendingMerge.mergeWithId, pendingMerge.mergeSubtask);
+      setMessages(m => [...m, 
+        { from: 'user', text: 'Yes, combine them' },
+        { from: 'system', text: '✓ Added to existing task' },
+        { from: 'ai', text: 'Nice, keeping it tidy! 🧹' }
+      ]);
+    } else {
+      pendingMerge.tasks.forEach(t => onAddTask(t));
+      setTotalTasksAdded(prev => prev + pendingMerge.tasks.length);
+      setMessages(m => [...m,
+        { from: 'user', text: 'Keep them separate' },
+        { from: 'system', text: `✓ ${pendingMerge.tasks.length} task${pendingMerge.tasks.length > 1 ? 's' : ''} into the void` },
+        { from: 'ai', text: 'Got it, separate it is!' }
+      ]);
+    }
+    setPendingMerge(null);
+  };
 
   const submit = async () => {
     if (!input.trim() || loading) return;
@@ -1644,12 +1923,21 @@ function ChatModal({ theme, onClose, onParseTasks, onAddTask }) {
     setMessages(m => [...m, { from: 'user', text }]);
     setLoading(true);
 
-    const result = await onParseTasks(text);
+    const result = await onParseTasks(text, totalTasksAdded);
     
-    if (result.tasks && result.tasks.length > 0) {
+    if (result.mergePrompt && result.mergeWithId) {
+      setPendingMerge({
+        tasks: result.tasks,
+        mergeWithId: result.mergeWithId,
+        mergeSubtask: result.mergeSubtask || result.tasks[0]?.text,
+        mergeType: result.mergeType
+      });
+      setMessages(m => [...m, { from: 'ai', text: result.mergePrompt, isMergePrompt: true }]);
+    } else if (result.tasks && result.tasks.length > 0) {
       result.tasks.forEach(t => onAddTask(t));
+      setTotalTasksAdded(prev => prev + result.tasks.length);
       setMessages(m => [...m,
-        { from: 'system', text: `✓ ${result.tasks.length} task${result.tasks.length > 1 ? 's' : ''} added` },
+        { from: 'system', text: `✓ ${result.tasks.length} task${result.tasks.length > 1 ? 's' : ''} into the void` },
         { from: 'ai', text: result.response }
       ]);
     } else {
@@ -1659,107 +1947,205 @@ function ChatModal({ theme, onClose, onParseTasks, onAddTask }) {
   };
 
   return (
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      backgroundColor: 'rgba(0,0,0,0.6)',
-      zIndex: 100,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      backdropFilter: 'blur(8px)',
-    }}>
-      <div style={{
-        backgroundColor: theme.cardBg,
-        borderRadius: 20,
-        width: 450,
-        maxWidth: '95%',
-        maxHeight: '75vh',
+    <div 
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        zIndex: 100,
         display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-      }}>
+        alignItems: 'center',
+        justifyContent: 'center',
+        backdropFilter: 'blur(8px)',
+      }}
+    >
+      <div 
+        onClick={e => e.stopPropagation()}
+        style={{
+          backgroundColor: '#111111',
+          borderRadius: 24,
+          width: 480,
+          maxWidth: '95%',
+          height: '70vh',
+          maxHeight: 600,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          position: 'relative',
+          boxShadow: '0 25px 50px rgba(0,0,0,0.5)',
+        }}
+      >
+        {/* Stars background */}
+        {stars.map((star, i) => (
+          <div
+            key={i}
+            style={{
+              position: 'absolute',
+              width: star.size,
+              height: star.size,
+              backgroundColor: '#fff',
+              borderRadius: '50%',
+              top: star.top,
+              left: star.left,
+              opacity: star.opacity,
+              animation: `twinkle ${star.duration}s ease-in-out ${star.delay}s infinite`,
+              pointerEvents: 'none',
+            }}
+          />
+        ))}
+
+        {/* Header */}
         <div style={{
-          padding: '20px 24px',
-          borderBottom: `1px solid ${theme.border}`,
+          padding: '16px 20px',
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
+          position: 'relative',
+          zIndex: 1,
         }}>
-          <h3 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>Add Tasks</h3>
+          <div style={{ width: 44 }} />
+          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: '#ffffff', letterSpacing: 0.5 }}>
+            Add tasks
+          </h3>
           <button onClick={onClose} style={{
             background: 'none',
             border: 'none',
-            fontSize: 24,
-            color: theme.textMuted,
+            fontSize: 28,
+            color: 'rgba(255,255,255,0.5)',
             cursor: 'pointer',
+            width: 44,
+            height: 44,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}>×</button>
         </div>
 
+        {/* Messages area */}
         <div ref={ref} style={{
           flex: 1,
           overflowY: 'auto',
-          padding: 20,
+          padding: '20px',
           display: 'flex',
           flexDirection: 'column',
           gap: 12,
+          position: 'relative',
+          zIndex: 1,
         }}>
           {messages.map((m, i) => (
-            <div key={i} style={{
-              alignSelf: m.from === 'user' ? 'flex-end' : 'flex-start',
-              backgroundColor: m.from === 'user' ? theme.accent : m.from === 'system' ? 'transparent' : theme.bgSecondary,
-              color: m.from === 'user' ? theme.accentText : m.from === 'system' ? theme.success : theme.text,
-              padding: m.from === 'system' ? '6px 0' : '12px 16px',
-              borderRadius: 18,
-              maxWidth: '85%',
-              fontSize: m.from === 'system' ? 14 : 15,
-              fontWeight: m.from === 'system' ? 500 : 400,
-            }}>{m.text}</div>
+            <React.Fragment key={i}>
+              <div style={{
+                alignSelf: m.from === 'user' ? 'flex-end' : 'flex-start',
+                backgroundColor: m.from === 'user' 
+                  ? 'rgba(255,255,255,0.15)' 
+                  : m.from === 'system' 
+                    ? 'transparent' 
+                    : 'rgba(255,255,255,0.08)',
+                color: m.from === 'system' ? 'rgba(255,255,255,0.5)' : '#ffffff',
+                padding: m.from === 'system' ? '6px 0' : '12px 16px',
+                borderRadius: 18,
+                maxWidth: '85%',
+                fontSize: m.from === 'system' ? 14 : 15,
+                fontWeight: m.from === 'system' ? 500 : 400,
+              }}>{m.text}</div>
+              {m.isMergePrompt && pendingMerge && (
+                <div style={{ 
+                  display: 'flex', 
+                  gap: 8, 
+                  alignSelf: 'flex-start',
+                  marginTop: 4,
+                }}>
+                  <button
+                    onClick={() => handleMergeResponse(true)}
+                    style={{
+                      padding: '8px 16px',
+                      borderRadius: 20,
+                      border: '1px solid rgba(255,255,255,0.3)',
+                      backgroundColor: 'rgba(255,255,255,0.1)',
+                      color: '#ffffff',
+                      fontSize: 14,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Yes, combine
+                  </button>
+                  <button
+                    onClick={() => handleMergeResponse(false)}
+                    style={{
+                      padding: '8px 16px',
+                      borderRadius: 20,
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      backgroundColor: 'transparent',
+                      color: 'rgba(255,255,255,0.7)',
+                      fontSize: 14,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Keep separate
+                  </button>
+                </div>
+              )}
+            </React.Fragment>
           ))}
           {loading && (
             <div style={{
               alignSelf: 'flex-start',
-              backgroundColor: theme.bgSecondary,
               padding: '12px 16px',
-              borderRadius: 18,
-              color: theme.textMuted,
-              fontStyle: 'italic',
-              fontSize: 14,
-            }}>{loadingMantras[Math.floor(Math.random() * loadingMantras.length)]}</div>
+              display: 'flex',
+              gap: 4,
+            }}>
+              {[0, 1, 2].map(i => (
+                <div key={i} style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  backgroundColor: 'rgba(255,255,255,0.5)',
+                  animation: `pulse 1.4s ease-in-out ${i * 0.2}s infinite`,
+                }} />
+              ))}
+            </div>
           )}
         </div>
 
+        {/* Input area */}
         <div style={{
-          padding: '16px 20px',
-          borderTop: `1px solid ${theme.border}`,
+          padding: '16px 20px 20px',
           display: 'flex',
           gap: 10,
+          position: 'relative',
+          zIndex: 1,
         }}>
           <input
             value={input}
             onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && submit()}
-            placeholder="e.g. call mom tomorrow, buy groceries..."
+            onKeyDown={e => e.key === 'Enter' && !pendingMerge && submit()}
+            placeholder={pendingMerge ? "Answer above first..." : "I need to..."}
+            disabled={!!pendingMerge}
+            autoFocus
             style={{
               flex: 1,
-              padding: '12px 16px',
-              border: `1px solid ${theme.border}`,
+              padding: '14px 18px',
+              border: '1px solid rgba(255,255,255,0.2)',
               borderRadius: 50,
-              fontSize: 15,
-              backgroundColor: theme.bg,
-              color: theme.text,
+              fontSize: 16,
+              backgroundColor: 'rgba(255,255,255,0.1)',
+              color: '#ffffff',
               outline: 'none',
             }}
           />
-          <button onClick={submit} disabled={!input.trim()} style={{
-            width: 44,
-            height: 44,
+          <button onClick={submit} disabled={!input.trim() || pendingMerge} style={{
+            width: 48,
+            height: 48,
             borderRadius: '50%',
             border: 'none',
-            backgroundColor: input.trim() ? theme.accent : theme.border,
-            color: theme.accentText,
-            fontSize: 18,
+            backgroundColor: input.trim() ? '#ffffff' : 'rgba(255,255,255,0.2)',
+            color: '#111111',
+            fontSize: 20,
             cursor: input.trim() ? 'pointer' : 'default',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}>↑</button>
         </div>
       </div>
@@ -1869,3 +2255,4 @@ function SettingsModal({ theme, settings, onSave, onClose }) {
     </div>
   );
 }
+
