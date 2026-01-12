@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, Inbox, Calendar, Timer, Sunrise, Copy, Settings, RefreshCw } from 'lucide-react';
+import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, Inbox, Calendar, Timer, Sunrise, Copy, Settings, RefreshCw, Sparkles, List } from 'lucide-react';
 
 // Themes
 const themes = {
@@ -146,6 +146,7 @@ export default function ADHDo() {
   const [weather, setWeather] = useState(null);
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [sections, setSections] = useState({ void: true, today: true, tomorrow: true, week: true, later: true });
+  const [showCompleted, setShowCompleted] = useState(false);
   const [customOrder, setCustomOrder] = useState({});
   const [draggedTask, setDraggedTask] = useState(null);
   const [dragOverSection, setDragOverSection] = useState(null);
@@ -155,6 +156,7 @@ export default function ADHDo() {
   const [selectedTask, setSelectedTask] = useState(null);
   const [whenPickerTask, setWhenPickerTask] = useState(null);
   const [suggestionTaskIds, setSuggestionTaskIds] = useState(null); // Track which tasks the suggestion is based on
+  const [todayDoneMessage, setTodayDoneMessage] = useState(null);
 
   const hour = new Date().getHours();
   const isEvening = hour >= settings.eveningHour;
@@ -166,7 +168,15 @@ export default function ADHDo() {
       const savedTasks = localStorage.getItem('adhdo-tasks');
       const savedSettings = localStorage.getItem('adhdo-settings');
       const savedOrder = localStorage.getItem('adhdo-order');
-      if (savedTasks) setTasks(JSON.parse(savedTasks));
+      if (savedTasks) {
+        const parsedTasks = JSON.parse(savedTasks);
+        // Clean up completed tasks older than a week
+        const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const cleanedTasks = parsedTasks.filter(t => 
+          !t.completed || !t.completedAt || t.completedAt >= oneWeekAgo
+        );
+        setTasks(cleanedTasks);
+      }
       if (savedSettings) setSettings(JSON.parse(savedSettings));
       if (savedOrder) setCustomOrder(JSON.parse(savedOrder));
     } catch (e) {}
@@ -194,6 +204,18 @@ export default function ADHDo() {
     // Only fetch if we have an API key, tasks exist, and task list has changed
     if (settings.apiKey && incompleteTasks.length > 0 && currentIds !== taskIdsRef.current) {
       taskIdsRef.current = currentIds;
+      
+      // Check if today tasks were added while showing todayDoneMessage
+      const todayDate = new Date().toISOString().split('T')[0];
+      const todayTasks = incompleteTasks.filter(t => t.doDate && t.doDate <= todayDate);
+      
+      if (todayDoneMessage && todayTasks.length > 0) {
+        // New today tasks added - clear celebration and refresh
+        setTodayDoneMessage(null);
+        getSuggestion();
+        return;
+      }
+      
       // Small delay to batch rapid changes
       const timeout = setTimeout(() => {
         if (!suggestion || !incompleteTasks.find(t => t.id === suggestion.task?.id)) {
@@ -202,7 +224,7 @@ export default function ADHDo() {
       }, 500);
       return () => clearTimeout(timeout);
     }
-  }, [tasks, settings.apiKey]);
+  }, [tasks, settings.apiKey, todayDoneMessage]);
 
   // Fetch weather
   const fetchWeather = () => {
@@ -239,9 +261,78 @@ export default function ADHDo() {
     );
   };
 
+  // AI: Generate celebration message when today's tasks are done
+  const generateTodayDoneMessage = async (completedCount) => {
+    // Fetch a random celebration GIF from Giphy
+    const fetchCelebrationGif = async (searchTerm = 'celebration') => {
+      try {
+        // Using Giphy's public beta API key (rate limited but free)
+        const response = await fetch(
+          `https://api.giphy.com/v1/gifs/search?api_key=dc6zaTOxFJmzC&q=${encodeURIComponent(searchTerm)}&limit=25&rating=pg`
+        );
+        const data = await response.json();
+        if (data.data && data.data.length > 0) {
+          const randomIndex = Math.floor(Math.random() * Math.min(data.data.length, 25));
+          return data.data[randomIndex].images.fixed_height.url;
+        }
+      } catch (e) {
+        console.error('GIF fetch error:', e);
+      }
+      return null;
+    };
+
+    if (!settings.apiKey) {
+      const gifUrl = await fetchCelebrationGif('happy dance celebration');
+      setTodayDoneMessage({
+        headline: "You're done for today!",
+        subtitle: `${completedCount} task${completedCount > 1 ? 's' : ''} completed. You've earned a break.`,
+        gifUrl
+      });
+      return;
+    }
+
+    try {
+      const eveningContext = isEvening ? "It's evening time, so emphasize rest and winding down. Messages like 'rest is productive too' or 'your couch is calling' are great!" : "";
+      
+      const response = await callClaude(
+        settings.apiKey,
+        'claude-haiku-4-5-20251001',
+        `You're a witty, warm friend celebrating someone finishing their tasks for the day. Be funny, playful, and genuinely celebratory. Keep it SHORT - one punchy headline and one short subtitle. Also suggest a fun GIF search term. ${eveningContext}`,
+        `The user just completed ALL their tasks for today! They got through ${completedCount} task${completedCount > 1 ? 's' : ''}.${isEvening ? " It's evening now." : ""}
+
+Return ONLY JSON:
+{"headline":"funny celebratory headline, 5-8 words max, no emoji","subtitle":"short supportive message","gifSearch":"2-3 word gif search term like 'mic drop' or 'happy dance' or 'couch relaxing'"}`
+      );
+      const match = response.match(/\{[\s\S]*\}/);
+      if (match) {
+        const data = JSON.parse(match[0]);
+        const gifUrl = await fetchCelebrationGif(data.gifSearch || 'celebration success');
+        setTodayDoneMessage({
+          headline: data.headline,
+          subtitle: data.subtitle,
+          completedCount,
+          gifUrl
+        });
+      }
+    } catch (e) {
+      const gifUrl = await fetchCelebrationGif('celebration success');
+      setTodayDoneMessage({
+        headline: "You're done for today!",
+        subtitle: `${completedCount} task${completedCount > 1 ? 's' : ''} completed. You've earned a break.`,
+        gifUrl
+      });
+    }
+  };
+
   // AI: Get task suggestion
-  const getSuggestion = async () => {
-    const incomplete = tasks.filter(t => !t.completed);
+  const getSuggestion = async (skipTodayDoneCheck = false) => {
+    let incomplete = tasks.filter(t => !t.completed);
+    
+    // In evening mode, only show home tasks
+    if (isEvening) {
+      incomplete = incomplete.filter(t => t.location === 'home' || t.location === 'either');
+    }
+    
     if (!incomplete.length || !settings.apiKey) {
       setSuggestion(null);
       return;
@@ -254,6 +345,28 @@ export default function ADHDo() {
     
     const urgentToday = incomplete.filter(t => t.doDate && t.doDate <= todayDate && t.urgent);
     const normalToday = incomplete.filter(t => t.doDate && t.doDate <= todayDate && !t.urgent);
+    const todayTasksLeft = urgentToday.length + normalToday.length;
+    
+    // Check if today is complete but there are other tasks
+    const todayCompletedTasks = tasks.filter(t => 
+      t.completed && 
+      t.completedAt && 
+      t.completedAt.split('T')[0] === todayDate
+    );
+    
+    // If no today tasks left but there are other tasks, show celebration (unless skipped)
+    // Only show full GIF celebration if 3+ tasks were completed today
+    if (!skipTodayDoneCheck && todayTasksLeft === 0 && incomplete.length > 0 && todayCompletedTasks.length >= 3) {
+      // Generate AI celebration message with GIF
+      if (!todayDoneMessage) {
+        generateTodayDoneMessage(todayCompletedTasks.length);
+      }
+      setSuggestion(null);
+      return;
+    } else if (skipTodayDoneCheck) {
+      setTodayDoneMessage(null);
+    }
+    
     const urgentTomorrow = incomplete.filter(t => t.doDate === tomorrowDate && t.urgent);
     const normalTomorrow = incomplete.filter(t => t.doDate === tomorrowDate && !t.urgent);
     const urgentWeek = incomplete.filter(t => t.doDate > tomorrowDate && t.doDate <= weekEndDate && t.urgent);
@@ -359,7 +472,7 @@ Return ONLY JSON:
       // Fallback - just pick first from priority pool
       setSuggestion({
         task: priorityPool[0],
-        headline: priorityPool[0].urgent ? "🔥 This one's urgent!" : "Let's knock this out",
+        headline: priorityPool[0].urgent ? "This one's urgent!" : "Let's knock this out",
         subtitle: "You've got this!",
         batchTasks: [],
       });
@@ -380,10 +493,26 @@ Return ONLY JSON:
       subtasks: t.subtasks?.map(st => st.text) || []
     }));
 
+    // Calculate key dates for the AI
+    const today = new Date();
+    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+    const nextWeekStart = new Date(today); nextWeekStart.setDate(today.getDate() + 7);
+    const nextWeekEnd = new Date(today); nextWeekEnd.setDate(today.getDate() + 13);
+    const nextMonthStart = new Date(today); nextMonthStart.setMonth(today.getMonth() + 1);
+
     const systemPrompt = `Parse tasks from natural language. You're a warm, witty friend who truly gets ADHD brains.
 
 Categories: phone, errand, cleaning, medical, financial, work, shopping, home
 Locations: home, out, either
+
+DATE PARSING - Pay close attention to time references:
+- "today" → today's date
+- "tomorrow" → tomorrow's date
+- "this week" → a date within the next 7 days
+- "next week" → a date 7-13 days from now (pick middle of next week)
+- "next month", "later", "eventually", "someday", "at some point" → a date 30+ days out
+- No time mentioned → null (goes to void/unsorted)
+- Specific days like "Monday", "Friday" → calculate the actual date
 
 IMPORTANT: If the user mentions needing to get/buy multiple items as part of ONE task, create ONE task with subtasks.
 Example: "go to health food store to get beans, bread and butter" becomes:
@@ -395,11 +524,6 @@ DUPLICATE/MERGE DETECTION:
 - If you detect a potential duplicate or merge, set "mergePrompt" with a friendly question
 - Include "mergeWithId" (the existing task ID) and "mergeType" ("duplicate" or "combine")
 
-Examples:
-- User has "order green tea", adds "order guitar hooks" → suggest merging into one "Online orders" task
-- User has "call mom", adds "call mom" → duplicate detected
-- User has "CVS", adds "pick up prescription" → could merge as same errand
-
 PERSONALITY RULES FOR YOUR RESPONSE:
 - If they're adding a LOT of tasks (5+): acknowledge it warmly
 - If they mention something emotionally heavy: be genuinely empathetic
@@ -407,7 +531,11 @@ PERSONALITY RULES FOR YOUR RESPONSE:
 - Keep responses SHORT - one sentence, maybe two max
 - Sound human, not like a corporate chatbot`;
 
-    const userPrompt = `Today: ${new Date().toISOString().split('T')[0]}
+    const userPrompt = `Today: ${today.toISOString().split('T')[0]} (${today.toLocaleDateString('en-US', { weekday: 'long' })})
+Tomorrow: ${tomorrow.toISOString().split('T')[0]}
+Next week range: ${nextWeekStart.toISOString().split('T')[0]} to ${nextWeekEnd.toISOString().split('T')[0]}
+Next month starts: ${nextMonthStart.toISOString().split('T')[0]}
+
 Tasks already added this session: ${totalTasksAddedSoFar}
 User said: "${text}"
 
@@ -452,14 +580,28 @@ Return ONLY JSON:
 
   const completeTask = (id) => {
     const task = tasks.find(t => t.id === id);
-    if (task && !task.completed) {
+    if (!task || task.completed) return;
+    
+    const todayDate = new Date().toISOString().split('T')[0];
+    const completedTodayCount = tasks.filter(t => 
+      t.completed && t.completedAt && t.completedAt.split('T')[0] === todayDate
+    ).length;
+    
+    // Show full celebration every 5th task completed today
+    if ((completedTodayCount + 1) % 5 === 0) {
       setShowCelebration(task);
     }
+    
     setTasks(tasks.map(t => t.id === id ? { ...t, completed: true, completedAt: new Date().toISOString() } : t));
   };
 
   const deleteTask = (id) => setTasks(tasks.filter(t => t.id !== id));
-  const toggleUrgent = (id) => setTasks(tasks.map(t => t.id === id ? { ...t, urgent: !t.urgent } : t));
+  const toggleUrgent = (id) => {
+    setTasks(tasks.map(t => t.id === id ? { ...t, urgent: !t.urgent } : t));
+    if (selectedTask && selectedTask.id === id) {
+      setSelectedTask({ ...selectedTask, urgent: !selectedTask.urgent });
+    }
+  };
   const skipTask = () => getSuggestion();
   
   const toggleSubtask = (taskId, subtaskIndex) => {
@@ -619,6 +761,15 @@ Return ONLY JSON:
         sectionTasks = [];
     }
     return sectionTasks;
+  };
+
+  // Get bucket label for a task
+  const getTaskBucketLabel = (task) => {
+    if (!task.doDate) return 'the void';
+    if (task.doDate <= today) return null; // Today tasks don't need a label
+    if (task.doDate === tomorrow) return "tomorrow's list";
+    if (task.doDate <= weekEnd) return 'this week';
+    return 'later';
   };
 
   // Quick add handler
@@ -800,10 +951,55 @@ Return ONLY JSON:
                   cursor: 'pointer',
                 }}>Open Settings</button>
               </div>
-            ) : remaining === 0 ? (
-              <div style={{ padding: '60px 20px' }}>
-                <div style={{ fontSize: 48, marginBottom: 16 }}>✨</div>
-                <p style={{ fontSize: 18, color: theme.textSecondary }}>All clear! Add some tasks.</p>
+            ) : todayDoneMessage ? (
+              <div style={{ 
+                padding: '60px 20px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: 'calc(100vh - 280px)',
+                textAlign: 'center',
+              }}>
+                {todayDoneMessage.gifUrl ? (
+                  <img 
+                    src={todayDoneMessage.gifUrl} 
+                    alt="Celebration" 
+                    style={{ 
+                      width: 200, 
+                      height: 150, 
+                      objectFit: 'cover', 
+                      borderRadius: 16, 
+                      marginBottom: 24,
+                    }} 
+                  />
+                ) : (
+                  <Sparkles size={48} color={theme.textSecondary} style={{ marginBottom: 20 }} />
+                )}
+                <h2 style={{ fontSize: 28, fontWeight: 700, margin: '0 0 12px', lineHeight: 1.3 }}>
+                  {todayDoneMessage.headline}
+                </h2>
+                <p style={{ fontSize: 17, color: theme.textSecondary, margin: '0 0 32px' }}>
+                  {todayDoneMessage.subtitle}
+                </p>
+                <button 
+                  onClick={() => {
+                    setTodayDoneMessage(null);
+                    getSuggestion(true);
+                  }}
+                  style={{
+                    padding: '14px 28px',
+                    backgroundColor: theme.bgSecondary,
+                    color: theme.text,
+                    border: 'none',
+                    borderRadius: 50,
+                    fontSize: 16,
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                  }}
+                >
+                  I want to do more
+                </button>
               </div>
             ) : loading ? (
               <div style={{ 
@@ -830,6 +1026,7 @@ Return ONLY JSON:
                 alignItems: 'center',
                 justifyContent: 'center',
                 minHeight: 'calc(100vh - 280px)',
+                textAlign: 'center',
               }}>
                 {isEvening && (
                   <div style={{
@@ -839,13 +1036,16 @@ Return ONLY JSON:
                     fontSize: 14,
                     color: theme.textSecondary,
                     marginBottom: 32,
-                  }}>🌙 Evening mode — home tasks only</div>
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}><Moon size={16} /> Evening mode — home tasks only</div>
                 )}
                 
-                <h2 style={{ fontSize: 30, fontWeight: 700, margin: '0 0 8px', lineHeight: 1.3 }}>
+                <h2 style={{ fontSize: 34, fontWeight: 700, margin: '0 0 10px', lineHeight: 1.3 }}>
                   {suggestion.headline}
                 </h2>
-                <p style={{ fontSize: 16, color: theme.textSecondary, margin: '0 0 32px' }}>
+                <p style={{ fontSize: 18, color: theme.textSecondary, margin: '0 0 32px' }}>
                   {suggestion.subtitle}
                 </p>
 
@@ -893,7 +1093,7 @@ Return ONLY JSON:
                     }}
                   >
                     <div style={{ fontSize: 20, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
-                      {suggestion.task.urgent && <span>🔥</span>}
+                      {suggestion.task.urgent && <Flame size={20} color="#F97316" fill="#F97316" />}
                       {suggestion.task.text}
                     </div>
                     {suggestion.task.subtasks && suggestion.task.subtasks.length > 0 && (
@@ -909,56 +1109,72 @@ Return ONLY JSON:
                   <div style={{
                     width: '100%',
                     padding: '8px 24px',
-                    backgroundColor: theme.cardBg,
+                    backgroundColor: 'transparent',
+                    border: `2px dashed ${theme.border}`,
                     borderRadius: 16,
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
                   }}>
-                    {suggestion.batchTasks.map((batchTask) => (
-                      <div
-                        key={batchTask.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 16,
-                          padding: '12px 0',
-                          color: theme.text,
-                        }}
-                      >
-                        <button 
-                          onClick={() => completeTask(batchTask.id)}
+                    {suggestion.batchTasks.map((batchTask) => {
+                      const bucketLabel = getTaskBucketLabel(batchTask);
+                      return (
+                        <div
+                          key={batchTask.id}
                           style={{
-                            width: 28,
-                            height: 28,
-                            borderRadius: 8,
-                            border: `2px solid ${theme.border}`,
-                            background: 'none',
-                            cursor: 'pointer',
-                            flexShrink: 0,
                             display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          <Check size={16} color={theme.textMuted} style={{ opacity: 0.5 }} />
-                        </button>
-                        <button
-                          onClick={() => setSelectedTask(batchTask)}
-                          style={{
-                            flex: 1,
-                            background: 'none',
-                            border: 'none',
-                            textAlign: 'left',
-                            cursor: 'pointer',
-                            padding: 0,
+                            alignItems: 'flex-start',
+                            gap: 16,
+                            padding: '12px 0',
                             color: theme.text,
-                            fontSize: 20,
-                            fontWeight: 600,
                           }}
                         >
-                          {batchTask.text}
-                        </button>
-                      </div>
-                    ))}
+                          <button 
+                            onClick={() => completeTask(batchTask.id)}
+                            style={{
+                              width: 28,
+                              height: 28,
+                              borderRadius: 8,
+                              border: `2px solid ${theme.border}`,
+                              background: 'none',
+                              cursor: 'pointer',
+                              flexShrink: 0,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              marginTop: bucketLabel ? 4 : 0,
+                            }}
+                          >
+                            <Check size={16} color={theme.textMuted} style={{ opacity: 0.5 }} />
+                          </button>
+                          <button
+                            onClick={() => setSelectedTask(batchTask)}
+                            style={{
+                              flex: 1,
+                              background: 'none',
+                              border: 'none',
+                              textAlign: 'left',
+                              cursor: 'pointer',
+                              padding: 0,
+                              color: theme.text,
+                            }}
+                          >
+                            {bucketLabel && (
+                              <div style={{ 
+                                fontSize: 11, 
+                                color: theme.textMuted, 
+                                marginBottom: 6,
+                                textTransform: 'uppercase',
+                                letterSpacing: 1,
+                                fontWeight: 600,
+                              }}>
+                                From {bucketLabel}
+                              </div>
+                            )}
+                            <div style={{ fontSize: 20, fontWeight: 600 }}>
+                              {batchTask.text}
+                            </div>
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -972,6 +1188,7 @@ Return ONLY JSON:
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
+                  alignSelf: 'center',
                 }}><RefreshCw size={14} /> Surprise me</button>
               </div>
             ) : (
@@ -982,10 +1199,26 @@ Return ONLY JSON:
                 alignItems: 'center',
                 justifyContent: 'center',
                 minHeight: 'calc(100vh - 280px)',
+                textAlign: 'center',
               }}>
-                <p style={{ fontSize: 16, color: theme.textMuted }}>
-                  Add some tasks to get started
-                </p>
+                {isEvening ? (
+                  <>
+                    <Moon size={48} color={theme.textSecondary} style={{ marginBottom: 16 }} />
+                    <p style={{ fontSize: 18, color: theme.textSecondary, marginBottom: 8 }}>
+                      No home tasks for tonight
+                    </p>
+                    <p style={{ fontSize: 15, color: theme.textMuted }}>
+                      Rest is productive too.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={48} color={theme.textSecondary} style={{ marginBottom: 16 }} />
+                    <p style={{ fontSize: 16, color: theme.textMuted }}>
+                      Add some tasks to get started
+                    </p>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -994,9 +1227,12 @@ Return ONLY JSON:
         {/* LIST Tab */}
         {activeTab === 'list' && (
           <div>
-            <h2 style={{ fontSize: 26, fontWeight: 600, marginBottom: 24 }}>
-              {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
-            </h2>
+            <div style={{ textAlign: 'center', marginBottom: 28 }}>
+              <p style={{ fontSize: 13, color: theme.textMuted, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 1 }}>Today is</p>
+              <h2 style={{ fontSize: 26, fontWeight: 600, margin: 0 }}>
+                {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+              </h2>
+            </div>
             
             {[
               { key: 'void', title: 'The Void', items: voidTasks, icon: Inbox },
@@ -1017,7 +1253,7 @@ Return ONLY JSON:
                   marginBottom: section.key === 'void' ? '24px' : '8px',
                   borderRadius: section.key === 'void' ? 16 : 12,
                   backgroundColor: section.key === 'void' 
-                    ? '#111111' 
+                    ? '#0D0C0E' 
                     : (dragOverSection === section.key ? theme.bgSecondary : 'transparent'),
                   border: dragOverSection === section.key && section.key !== 'void' 
                     ? `2px dashed ${theme.border}` 
@@ -1243,7 +1479,7 @@ Return ONLY JSON:
                             cursor: 'pointer',
                             flexShrink: 0,
                           }} />
-                          {task.urgent && <Flame size={16} color="#ef4444" />}
+                          {task.urgent && <Flame size={16} color="#F97316" fill="#F97316" />}
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <span style={{ fontSize: 16 }}>{task.text}</span>
                             {task.dueDate && (
@@ -1319,7 +1555,7 @@ Return ONLY JSON:
                             padding: 4,
                             display: section.key === 'void' ? 'none' : 'flex',
                             alignItems: 'center',
-                          }}><Flame size={16} color={task.urgent ? '#ef4444' : theme.textMuted} /></button>
+                          }}><Flame size={16} color={task.urgent ? '#F97316' : theme.textMuted} fill={task.urgent ? '#F97316' : 'none'} /></button>
                           <button onClick={(e) => { e.stopPropagation(); deleteTask(task.id); }} style={{
                             background: 'none',
                             border: 'none',
@@ -1350,6 +1586,96 @@ Return ONLY JSON:
                 )}
               </div>
             )})}
+
+            {/* Completed Tasks Section */}
+            {(() => {
+              const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+              const recentlyCompleted = tasks.filter(t => 
+                t.completed && 
+                t.completedAt && 
+                t.completedAt >= oneWeekAgo
+              ).sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
+              
+              if (recentlyCompleted.length === 0) return null;
+              
+              return (
+                <div style={{ marginTop: 24 }}>
+                  <div 
+                    onClick={() => setShowCompleted(!showCompleted)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      padding: '14px 0',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{
+                      color: theme.textMuted,
+                      transform: showCompleted ? 'rotate(0)' : 'rotate(-90deg)',
+                      transition: 'transform 0.2s',
+                      display: 'flex',
+                      alignItems: 'center',
+                    }}><ChevronDown size={16} /></span>
+                    <Check size={18} color={theme.textMuted} />
+                    <span style={{ 
+                      fontSize: 14, 
+                      fontWeight: 600, 
+                      color: theme.textSecondary, 
+                      textTransform: 'uppercase', 
+                      letterSpacing: 0.5 
+                    }}>
+                      Completed
+                    </span>
+                    <span style={{ fontSize: 13, color: theme.textMuted }}>({recentlyCompleted.length})</span>
+                  </div>
+                  
+                  {showCompleted && (
+                    <div style={{ paddingLeft: 0 }}>
+                      {recentlyCompleted.map((task) => (
+                        <div 
+                          key={task.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            padding: '14px 20px',
+                            backgroundColor: theme.cardBg,
+                            borderRadius: 12,
+                            marginBottom: 6,
+                            gap: 14,
+                            opacity: 0.6,
+                          }}
+                        >
+                          <div style={{
+                            width: 24,
+                            height: 24,
+                            borderRadius: 6,
+                            backgroundColor: theme.success,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                          }}>
+                            <Check size={14} color="#fff" />
+                          </div>
+                          <span style={{ 
+                            flex: 1, 
+                            fontSize: 16, 
+                            color: theme.textSecondary,
+                            textDecoration: 'line-through',
+                          }}>
+                            {task.text}
+                          </span>
+                          <span style={{ fontSize: 12, color: theme.textMuted }}>
+                            {new Date(task.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
       </main>
@@ -1371,15 +1697,18 @@ Return ONLY JSON:
         zIndex: 50,
       }}>
         <button onClick={() => setActiveTab('now')} style={{
-          padding: '14px 22px',
+          padding: '14px 18px',
           borderRadius: 50,
           border: 'none',
-          backgroundColor: activeTab === 'now' ? theme.accent : 'transparent',
-          color: activeTab === 'now' ? theme.accentText : theme.textSecondary,
+          backgroundColor: activeTab === 'now' ? theme.bgSecondary : 'transparent',
+          color: activeTab === 'now' ? theme.text : theme.textMuted,
           fontSize: 15,
           fontWeight: 500,
           cursor: 'pointer',
-        }}>Now</button>
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}><Sparkles size={20} /></button>
         
         <button onClick={() => setShowChat(true)} style={{
           width: 54,
@@ -1396,15 +1725,18 @@ Return ONLY JSON:
         }}><Plus size={24} /></button>
         
         <button onClick={() => setActiveTab('list')} style={{
-          padding: '14px 22px',
+          padding: '14px 18px',
           borderRadius: 50,
           border: 'none',
-          backgroundColor: activeTab === 'list' ? theme.accent : 'transparent',
-          color: activeTab === 'list' ? theme.accentText : theme.textSecondary,
+          backgroundColor: activeTab === 'list' ? theme.bgSecondary : 'transparent',
+          color: activeTab === 'list' ? theme.text : theme.textMuted,
           fontSize: 15,
           fontWeight: 500,
           cursor: 'pointer',
-        }}>List</button>
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}><List size={20} /></button>
       </nav>
 
       {/* Chat Modal */}
@@ -1537,8 +1869,7 @@ Return ONLY JSON:
           cursor: 'pointer',
         }}>
           <Confetti />
-          <div style={{ fontSize: 72, marginBottom: 20 }}>🎉</div>
-          <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 12, textAlign: 'center', padding: '0 20px' }}>
+          <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 16, textAlign: 'center', padding: '0 20px' }}>
             {celebrationMessages[Math.floor(Math.random() * celebrationMessages.length)]}
           </div>
           <div style={{ fontSize: 16, color: theme.textMuted, textDecoration: 'line-through', marginBottom: 8 }}>
@@ -1548,8 +1879,8 @@ Return ONLY JSON:
           <div style={{
             marginTop: 40,
             padding: '14px 28px',
-            backgroundColor: theme.accent,
-            color: theme.accentText,
+            backgroundColor: theme.bgSecondary,
+            color: theme.text,
             borderRadius: 50,
             fontSize: 16,
             fontWeight: 500,
@@ -1607,15 +1938,15 @@ Return ONLY JSON:
                 onClick={() => toggleUrgent(selectedTask.id)}
                 style={{
                   padding: '8px 12px',
-                  backgroundColor: selectedTask.urgent ? '#fef2f2' : theme.bg,
-                  color: selectedTask.urgent ? '#ef4444' : theme.textMuted,
+                  backgroundColor: selectedTask.urgent ? '#fff7ed' : theme.bg,
+                  color: selectedTask.urgent ? '#F97316' : theme.textMuted,
                   border: 'none',
                   borderRadius: 8,
                   cursor: 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                 }}
-              ><Flame size={18} /></button>
+              ><Flame size={18} color={selectedTask.urgent ? '#F97316' : theme.textMuted} fill={selectedTask.urgent ? '#F97316' : 'none'} /></button>
             </div>
 
             {/* Task Text */}
@@ -1963,7 +2294,7 @@ function ChatModal({ theme, onClose, onParseTasks, onAddTask, onMergeTask }) {
       <div 
         onClick={e => e.stopPropagation()}
         style={{
-          backgroundColor: '#111111',
+          backgroundColor: '#0D0C0E',
           borderRadius: 24,
           width: 480,
           maxWidth: '95%',
