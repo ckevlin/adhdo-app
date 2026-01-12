@@ -133,6 +133,41 @@ function Confetti() {
   );
 }
 
+// Mini confetti burst component
+function MiniConfetti() {
+  const colors = ['#FF6B9D', '#4ECDC4', '#FEC84D', '#95E1D3', '#F38181'];
+  const pieces = Array.from({ length: 20 }, (_, i) => ({
+    id: i,
+    left: 40 + Math.random() * 20,
+    delay: Math.random() * 0.2,
+    duration: 0.8 + Math.random() * 0.5,
+    color: colors[Math.floor(Math.random() * colors.length)],
+    size: 6 + Math.random() * 4,
+    angle: (Math.random() - 0.5) * 120,
+  }));
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 10 }}>
+      {pieces.map(p => (
+        <div
+          key={p.id}
+          style={{
+            position: 'absolute',
+            left: `${p.left}%`,
+            top: '50%',
+            width: p.size,
+            height: p.size,
+            backgroundColor: p.color,
+            borderRadius: Math.random() > 0.5 ? '50%' : 2,
+            animation: `burst ${p.duration}s ease-out ${p.delay}s forwards`,
+            '--angle': `${p.angle}deg`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 // Main App
 export default function ADHDo() {
   const [tasks, setTasks] = useState([]);
@@ -140,7 +175,6 @@ export default function ADHDo() {
   const [activeTab, setActiveTab] = useState('now');
   const [showChat, setShowChat] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showCelebration, setShowCelebration] = useState(null);
   const [suggestion, setSuggestion] = useState(null);
   const [loading, setLoading] = useState(false);
   const [weather, setWeather] = useState(null);
@@ -157,6 +191,8 @@ export default function ADHDo() {
   const [whenPickerTask, setWhenPickerTask] = useState(null);
   const [suggestionTaskIds, setSuggestionTaskIds] = useState(null); // Track which tasks the suggestion is based on
   const [todayDoneMessage, setTodayDoneMessage] = useState(null);
+  const [completingTaskId, setCompletingTaskId] = useState(null);
+  const [showMiniConfetti, setShowMiniConfetti] = useState(false);
 
   const hour = new Date().getHours();
   const isEvening = hour >= settings.eveningHour;
@@ -201,10 +237,8 @@ export default function ADHDo() {
     const incompleteTasks = tasks.filter(t => !t.completed);
     const currentIds = incompleteTasks.map(t => t.id).sort().join(',');
     
-    // Only fetch if we have an API key, tasks exist, and task list has changed
-    if (settings.apiKey && incompleteTasks.length > 0 && currentIds !== taskIdsRef.current) {
-      taskIdsRef.current = currentIds;
-      
+    // Only fetch if we have an API key and tasks exist
+    if (settings.apiKey && incompleteTasks.length > 0) {
       // Check if today tasks were added while showing todayDoneMessage
       const todayDate = new Date().toISOString().split('T')[0];
       const todayTasks = incompleteTasks.filter(t => t.doDate && t.doDate <= todayDate);
@@ -216,13 +250,16 @@ export default function ADHDo() {
         return;
       }
       
-      // Small delay to batch rapid changes
-      const timeout = setTimeout(() => {
-        if (!suggestion || !incompleteTasks.find(t => t.id === suggestion.task?.id)) {
+      // Fetch if task list changed or we don't have a suggestion
+      if (currentIds !== taskIdsRef.current || !suggestion) {
+        taskIdsRef.current = currentIds;
+        
+        // Small delay to batch rapid changes
+        const timeout = setTimeout(() => {
           getSuggestion();
-        }
-      }, 500);
-      return () => clearTimeout(timeout);
+        }, 500);
+        return () => clearTimeout(timeout);
+      }
     }
   }, [tasks, settings.apiKey, todayDoneMessage]);
 
@@ -328,9 +365,9 @@ Return ONLY JSON:
   const getSuggestion = async (skipTodayDoneCheck = false) => {
     let incomplete = tasks.filter(t => !t.completed);
     
-    // In evening mode, only show home tasks
+    // In evening mode, only show home tasks (treat undefined/null as 'either')
     if (isEvening) {
-      incomplete = incomplete.filter(t => t.location === 'home' || t.location === 'either');
+      incomplete = incomplete.filter(t => !t.location || t.location === 'home' || t.location === 'either');
     }
     
     if (!incomplete.length || !settings.apiKey) {
@@ -582,20 +619,26 @@ Return ONLY JSON:
     const task = tasks.find(t => t.id === id);
     if (!task || task.completed) return;
     
-    const todayDate = new Date().toISOString().split('T')[0];
-    const completedTodayCount = tasks.filter(t => 
-      t.completed && t.completedAt && t.completedAt.split('T')[0] === todayDate
-    ).length;
+    // Trigger animation
+    setCompletingTaskId(id);
+    setShowMiniConfetti(true);
     
-    // Show full celebration every 5th task completed today
-    if ((completedTodayCount + 1) % 5 === 0) {
-      setShowCelebration(task);
-    }
+    // Delay the actual completion to let animation play
+    setTimeout(() => {
+      setTasks(tasks.map(t => t.id === id ? { ...t, completed: true, completedAt: new Date().toISOString() } : t));
+      setCompletingTaskId(null);
+    }, 300);
     
-    setTasks(tasks.map(t => t.id === id ? { ...t, completed: true, completedAt: new Date().toISOString() } : t));
+    // Hide mini confetti after animation
+    setTimeout(() => setShowMiniConfetti(false), 1500);
   };
 
   const deleteTask = (id) => setTasks(tasks.filter(t => t.id !== id));
+  
+  const uncompleteTask = (id) => {
+    setTasks(tasks.map(t => t.id === id ? { ...t, completed: false, completedAt: null } : t));
+  };
+  
   const toggleUrgent = (id) => {
     setTasks(tasks.map(t => t.id === id ? { ...t, urgent: !t.urgent } : t));
     if (selectedTask && selectedTask.id === id) {
@@ -858,6 +901,15 @@ Return ONLY JSON:
           0%, 100% { opacity: 0.3; }
           50% { opacity: 1; }
         }
+        @keyframes taskComplete {
+          0% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.02); }
+          100% { transform: scale(0.95); opacity: 0; }
+        }
+        @keyframes burst {
+          0% { transform: translateY(0) translateX(0) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(-100px) translateX(calc(var(--angle) * 1px)) rotate(360deg); opacity: 0; }
+        }
         @keyframes floatLR {
           0% { transform: translateX(-50px) rotate(0deg); opacity: 0; }
           3% { opacity: 0.5; }
@@ -1027,7 +1079,9 @@ Return ONLY JSON:
                 justifyContent: 'center',
                 minHeight: 'calc(100vh - 280px)',
                 textAlign: 'center',
+                position: 'relative',
               }}>
+                {showMiniConfetti && <MiniConfetti />}
                 {isEvening && (
                   <div style={{
                     backgroundColor: theme.bgSecondary,
@@ -1062,6 +1116,7 @@ Return ONLY JSON:
                     gap: 16,
                     boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
                     color: theme.text,
+                    animation: completingTaskId === suggestion.task.id ? 'taskComplete 0.3s ease-out forwards' : 'none',
                   }}>
                   <button 
                     onClick={() => completeTask(suggestion.task.id)}
@@ -1201,24 +1256,23 @@ Return ONLY JSON:
                 minHeight: 'calc(100vh - 280px)',
                 textAlign: 'center',
               }}>
-                {isEvening ? (
-                  <>
-                    <Moon size={48} color={theme.textSecondary} style={{ marginBottom: 16 }} />
-                    <p style={{ fontSize: 18, color: theme.textSecondary, marginBottom: 8 }}>
-                      No home tasks for tonight
-                    </p>
-                    <p style={{ fontSize: 15, color: theme.textMuted }}>
-                      Rest is productive too.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles size={48} color={theme.textSecondary} style={{ marginBottom: 16 }} />
-                    <p style={{ fontSize: 16, color: theme.textMuted }}>
-                      Add some tasks to get started
-                    </p>
-                  </>
+                {isEvening && (
+                  <div style={{
+                    backgroundColor: theme.bgSecondary,
+                    padding: '10px 20px',
+                    borderRadius: 50,
+                    fontSize: 14,
+                    color: theme.textSecondary,
+                    marginBottom: 32,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}><Moon size={16} /> Evening mode — home tasks only</div>
                 )}
+                <Sparkles size={48} color={theme.textSecondary} style={{ marginBottom: 16 }} />
+                <p style={{ fontSize: 16, color: theme.textMuted }}>
+                  Add some tasks to get started
+                </p>
               </div>
             )}
           </div>
@@ -1468,6 +1522,7 @@ Return ONLY JSON:
                             opacity: draggedTask?.id === task.id ? 0.4 : 1,
                             transform: draggedTask?.id === task.id ? 'scale(0.98)' : 'scale(1)',
                             transition: 'opacity 0.15s, transform 0.15s',
+                            animation: completingTaskId === task.id ? 'taskComplete 0.3s ease-out forwards' : 'none',
                           }}
                         >
                           <button onClick={(e) => { e.stopPropagation(); completeTask(task.id); }} style={{
@@ -1635,6 +1690,7 @@ Return ONLY JSON:
                       {recentlyCompleted.map((task) => (
                         <div 
                           key={task.id}
+                          onClick={() => uncompleteTask(task.id)}
                           style={{
                             display: 'flex',
                             alignItems: 'center',
@@ -1644,20 +1700,26 @@ Return ONLY JSON:
                             marginBottom: 6,
                             gap: 14,
                             opacity: 0.6,
+                            cursor: 'pointer',
                           }}
                         >
-                          <div style={{
-                            width: 24,
-                            height: 24,
-                            borderRadius: 6,
-                            backgroundColor: theme.success,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); uncompleteTask(task.id); }}
+                            style={{
+                              width: 24,
+                              height: 24,
+                              borderRadius: 6,
+                              backgroundColor: theme.textMuted,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              flexShrink: 0,
+                              border: 'none',
+                              cursor: 'pointer',
+                            }}
+                          >
                             <Check size={14} color="#fff" />
-                          </div>
+                          </button>
                           <span style={{ 
                             flex: 1, 
                             fontSize: 16, 
@@ -1852,39 +1914,6 @@ Return ONLY JSON:
               Keep in the void
             </button>
           </div>
-        </div>
-      )}
-
-      {/* Celebration */}
-      {showCelebration && (
-        <div onClick={() => { setShowCelebration(null); getSuggestion(); }} style={{
-          position: 'fixed',
-          inset: 0,
-          backgroundColor: theme.bg,
-          zIndex: 100,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-        }}>
-          <Confetti />
-          <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 16, textAlign: 'center', padding: '0 20px' }}>
-            {celebrationMessages[Math.floor(Math.random() * celebrationMessages.length)]}
-          </div>
-          <div style={{ fontSize: 16, color: theme.textMuted, textDecoration: 'line-through', marginBottom: 8 }}>
-            {showCelebration.text}
-          </div>
-          <div style={{ fontSize: 14, color: theme.textMuted }}>{remaining - 1} tasks remaining</div>
-          <div style={{
-            marginTop: 40,
-            padding: '14px 28px',
-            backgroundColor: theme.bgSecondary,
-            color: theme.text,
-            borderRadius: 50,
-            fontSize: 16,
-            fontWeight: 500,
-          }}>Tap to continue</div>
         </div>
       )}
 
