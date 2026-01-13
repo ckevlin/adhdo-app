@@ -194,14 +194,22 @@ export default function ADHDo() {
   const [todayDoneMessage, setTodayDoneMessage] = useState(null);
   const [completingTaskId, setCompletingTaskId] = useState(null);
   const [showMiniConfetti, setShowMiniConfetti] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const loadingMantraRef = useRef(loadingMantras[Math.floor(Math.random() * loadingMantras.length)]);
+  const deviceIdRef = useRef(null);
+
+  // Set mounted after first render (client-side only)
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const hour = new Date().getHours();
-  const isEvening = hour >= settings.eveningHour;
+  const isEvening = mounted ? hour >= settings.eveningHour : false;
   const theme = isEvening ? themes.dark : themes.light;
 
   // Generate or get device ID for this browser
   const getDeviceId = () => {
+    if (deviceIdRef.current) return deviceIdRef.current;
     try {
       let deviceId = localStorage.getItem('adhdo-device-id');
       if (!deviceId) {
@@ -209,6 +217,7 @@ export default function ADHDo() {
         localStorage.setItem('adhdo-device-id', deviceId);
         console.log('Created new device ID:', deviceId);
       }
+      deviceIdRef.current = deviceId;
       return deviceId;
     } catch (e) {
       console.error('Error getting device ID:', e);
@@ -216,8 +225,10 @@ export default function ADHDo() {
     }
   };
 
-  // Load saved data
+  // Load saved data - only on client side
   useEffect(() => {
+    if (!mounted) return;
+    
     const deviceId = getDeviceId();
     console.log('Using device ID:', deviceId);
     
@@ -274,16 +285,18 @@ export default function ADHDo() {
     }
 
     return () => unsubscribe();
-  }, []);
+  }, [mounted]);
 
   // Save settings to localStorage (settings stay local, not in Firebase)
   useEffect(() => {
+    if (!mounted) return;
     localStorage.setItem('adhdo-settings', JSON.stringify(settings));
-  }, [settings]);
+  }, [settings, mounted]);
 
   useEffect(() => {
+    if (!mounted) return;
     localStorage.setItem('adhdo-order', JSON.stringify(customOrder));
-  }, [customOrder]);
+  }, [customOrder, mounted]);
 
   // Auto-fetch suggestion when tasks change or on first load with API key
   const taskIdsRef = useRef(null);
@@ -2800,4 +2813,3 @@ function SettingsModal({ theme, settings, onSave, onClose }) {
     </div>
   );
 }
-
