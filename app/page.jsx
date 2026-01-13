@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, Inbox, Calendar, Timer, Sunrise, Copy, Settings, RefreshCw, Sparkles, List } from 'lucide-react';
-import { taskService } from '../lib/firebase';
+import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, Inbox, Calendar, Timer, Sunrise, Copy, Settings, RefreshCw, Sparkles, List, Mail, LogOut, User } from 'lucide-react';
+import { taskService, authService } from '../lib/firebase';
 
 // Themes
 const themes = {
@@ -195,6 +195,11 @@ export default function ADHDo() {
   const [completingTaskId, setCompletingTaskId] = useState(null);
   const [showMiniConfetti, setShowMiniConfetti] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [user, setUser] = useState(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const loadingMantraRef = useRef('');
   const deviceIdRef = useRef(null);
 
@@ -227,12 +232,48 @@ export default function ADHDo() {
     }
   };
 
+  // Get the ID to use for tasks (userId if logged in, deviceId otherwise)
+  const getTaskOwnerId = () => {
+    return user ? user.uid : getDeviceId();
+  };
+
+  // Handle magic link sign in
+  useEffect(() => {
+    if (!mounted) return;
+    
+    const completeSignIn = async () => {
+      try {
+        const signedInUser = await authService.completeMagicLinkSignIn();
+        if (signedInUser) {
+          setUser(signedInUser);
+          // Migrate any existing tasks from this device to the user account
+          const deviceId = getDeviceId();
+          const migrated = await taskService.migrateTasks(deviceId, signedInUser.uid);
+          if (migrated > 0) {
+            console.log(`Migrated ${migrated} tasks to user account`);
+          }
+        }
+      } catch (e) {
+        console.error('Error completing sign in:', e);
+      }
+    };
+    
+    completeSignIn();
+    
+    // Listen for auth state changes
+    const unsubscribe = authService.onAuthChange((authUser) => {
+      setUser(authUser);
+    });
+    
+    return () => unsubscribe();
+  }, [mounted]);
+
   // Load saved data - only on client side
   useEffect(() => {
     if (!mounted) return;
     
-    const deviceId = getDeviceId();
-    console.log('Using device ID:', deviceId);
+    const ownerId = user ? user.uid : getDeviceId();
+    console.log('Using owner ID:', ownerId, user ? '(logged in)' : '(device)');
     
     // Load settings from localStorage (these stay local)
     try {
@@ -258,7 +299,7 @@ export default function ADHDo() {
     let unsubscribe = () => {};
     try {
       console.log('Attempting to subscribe to Firebase...');
-      unsubscribe = taskService.subscribeToTasks(deviceId, (firebaseTasks) => {
+      unsubscribe = taskService.subscribeToTasks(ownerId, (firebaseTasks) => {
         console.log('Firebase tasks received:', firebaseTasks.length);
         // Clean up completed tasks older than a week
         const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -287,7 +328,7 @@ export default function ADHDo() {
     }
 
     return () => unsubscribe();
-  }, [mounted]);
+  }, [mounted, user]);
 
   // Save settings to localStorage (settings stay local, not in Firebase)
   useEffect(() => {
@@ -735,7 +776,7 @@ Return ONLY JSON:
 
   // Task actions
   const addTask = async (taskData) => {
-    const deviceId = localStorage.getItem('adhdo-device-id');
+    const ownerId = getTaskOwnerId();
     const taskPayload = {
       text: taskData.text,
       doDate: taskData.doDate || null,
@@ -746,7 +787,7 @@ Return ONLY JSON:
     
     try {
       // Add to Firebase (will sync back via subscription)
-      await taskService.addTask(deviceId, taskPayload);
+      await taskService.addTask(ownerId, taskPayload);
     } catch (e) {
       console.error('Firebase add failed, adding locally:', e);
       // Fallback to local
@@ -2042,6 +2083,29 @@ Return ONLY JSON:
           settings={settings}
           onSave={(s) => { setSettings(s); setShowSettings(false); }}
           onClose={() => setShowSettings(false)}
+          user={user}
+          authLoading={authLoading}
+          authMessage={authMessage}
+          onSendMagicLink={async (email) => {
+            setAuthLoading(true);
+            setAuthMessage('');
+            try {
+              await authService.sendMagicLink(email);
+              setAuthMessage('Check your email for a sign-in link!');
+            } catch (e) {
+              console.error('Error sending magic link:', e);
+              setAuthMessage('Failed to send link. Try again.');
+            }
+            setAuthLoading(false);
+          }}
+          onSignOut={async () => {
+            try {
+              await authService.signOut();
+              setUser(null);
+            } catch (e) {
+              console.error('Error signing out:', e);
+            }
+          }}
         />
       )}
 
@@ -2729,9 +2793,16 @@ function ChatModal({ theme, onClose, onParseTasks, onAddTask, onMergeTask }) {
 }
 
 // Settings Modal
-function SettingsModal({ theme, settings, onSave, onClose }) {
+function SettingsModal({ theme, settings, onSave, onClose, user, onSendMagicLink, onSignOut, authLoading, authMessage }) {
   const [key, setKey] = useState(settings.apiKey || '');
   const [hour, setHour] = useState(settings.eveningHour || 19);
+  const [email, setEmail] = useState('');
+
+  const handleSendLink = async () => {
+    if (email) {
+      await onSendMagicLink(email);
+    }
+  };
 
   return (
     <div style={{
@@ -2750,6 +2821,8 @@ function SettingsModal({ theme, settings, onSave, onClose }) {
         padding: 32,
         width: 400,
         maxWidth: '95%',
+        maxHeight: '90vh',
+        overflowY: 'auto',
       }}>
         <div style={{
           display: 'flex',
@@ -2765,6 +2838,101 @@ function SettingsModal({ theme, settings, onSave, onClose }) {
             color: theme.textMuted,
             cursor: 'pointer',
           }}>×</button>
+        </div>
+
+        {/* Account Section */}
+        <div style={{ 
+          marginBottom: 24, 
+          padding: 16, 
+          backgroundColor: theme.bg, 
+          borderRadius: 12,
+          border: `1px solid ${theme.border}`,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <User size={18} color={theme.textSecondary} />
+            <label style={{ fontSize: 14, fontWeight: 600, color: theme.textSecondary }}>
+              Account
+            </label>
+          </div>
+          
+          {user ? (
+            <div>
+              <p style={{ fontSize: 14, color: theme.text, margin: '0 0 12px' }}>
+                Signed in as <strong>{user.email}</strong>
+              </p>
+              <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px' }}>
+                ✓ Tasks sync across all your devices
+              </p>
+              <button 
+                onClick={onSignOut}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: 'transparent',
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: 8,
+                  fontSize: 14,
+                  color: theme.textMuted,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <LogOut size={14} />
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <div>
+              <p style={{ fontSize: 13, color: theme.textMuted, margin: '0 0 12px' }}>
+                Sign in to sync tasks across devices
+              </p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="your@email.com"
+                  style={{
+                    flex: 1,
+                    padding: '10px 12px',
+                    border: `1px solid ${theme.border}`,
+                    borderRadius: 8,
+                    fontSize: 14,
+                    backgroundColor: theme.cardBg,
+                    color: theme.text,
+                    outline: 'none',
+                  }}
+                />
+                <button 
+                  onClick={handleSendLink}
+                  disabled={authLoading || !email}
+                  style={{
+                    padding: '10px 16px',
+                    backgroundColor: theme.accent,
+                    color: theme.accentText,
+                    border: 'none',
+                    borderRadius: 8,
+                    fontSize: 14,
+                    fontWeight: 600,
+                    cursor: authLoading || !email ? 'not-allowed' : 'pointer',
+                    opacity: authLoading || !email ? 0.6 : 1,
+                  }}
+                >
+                  {authLoading ? '...' : 'Send Link'}
+                </button>
+              </div>
+              {authMessage && (
+                <p style={{ 
+                  fontSize: 13, 
+                  color: authMessage.includes('Check') ? '#22c55e' : '#ef4444', 
+                  margin: '10px 0 0',
+                }}>
+                  {authMessage}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ marginBottom: 24 }}>
@@ -2830,4 +2998,5 @@ function SettingsModal({ theme, settings, onSave, onClose }) {
     </div>
   );
 }
+
 
