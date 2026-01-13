@@ -202,17 +202,24 @@ export default function ADHDo() {
 
   // Generate or get device ID for this browser
   const getDeviceId = () => {
-    let deviceId = localStorage.getItem('adhdo-device-id');
-    if (!deviceId) {
-      deviceId = `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem('adhdo-device-id', deviceId);
+    try {
+      let deviceId = localStorage.getItem('adhdo-device-id');
+      if (!deviceId) {
+        deviceId = `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        localStorage.setItem('adhdo-device-id', deviceId);
+        console.log('Created new device ID:', deviceId);
+      }
+      return deviceId;
+    } catch (e) {
+      console.error('Error getting device ID:', e);
+      return `temp-${Date.now()}`;
     }
-    return deviceId;
   };
 
   // Load saved data
   useEffect(() => {
     const deviceId = getDeviceId();
+    console.log('Using device ID:', deviceId);
     
     // Load settings from localStorage (these stay local)
     try {
@@ -230,21 +237,30 @@ export default function ADHDo() {
       }
       if (savedOrder) setCustomOrder(JSON.parse(savedOrder));
     } catch (e) {
+      console.error('Error loading settings:', e);
       setLoading(false);
     }
 
     // Subscribe to Firebase tasks (real-time sync)
-    const unsubscribe = taskService.subscribeToTasks(deviceId, (firebaseTasks) => {
-      // Clean up completed tasks older than a week
-      const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      const cleanedTasks = firebaseTasks.filter(t => 
-        !t.completed || !t.completedAt || t.completedAt >= oneWeekAgo
-      );
-      setTasks(cleanedTasks);
-      
-      // Also save to localStorage as backup
-      localStorage.setItem('adhdo-tasks', JSON.stringify(cleanedTasks));
-    });
+    let unsubscribe = () => {};
+    try {
+      console.log('Attempting to subscribe to Firebase...');
+      unsubscribe = taskService.subscribeToTasks(deviceId, (firebaseTasks) => {
+        console.log('Firebase tasks received:', firebaseTasks.length);
+        // Clean up completed tasks older than a week
+        const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const cleanedTasks = firebaseTasks.filter(t => 
+          !t.completed || !t.completedAt || t.completedAt >= oneWeekAgo
+        );
+        setTasks(cleanedTasks);
+        
+        // Also save to localStorage as backup
+        localStorage.setItem('adhdo-tasks', JSON.stringify(cleanedTasks));
+      });
+      console.log('Firebase subscription created');
+    } catch (e) {
+      console.error('Firebase subscription error:', e);
+    }
 
     // Fallback: Load from localStorage if Firebase hasn't loaded yet
     const savedTasks = localStorage.getItem('adhdo-tasks');
@@ -2784,3 +2800,4 @@ function SettingsModal({ theme, settings, onSave, onClose }) {
     </div>
   );
 }
+
