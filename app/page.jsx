@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, Inbox, Calendar, Timer, Sunrise, Copy, Settings, RefreshCw, Sparkles, List, Mail, LogOut, User } from 'lucide-react';
+import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, Inbox, Calendar, Timer, Sunrise, Copy, Settings, RefreshCw, Sparkles, List, Mail, LogOut, User, GripVertical } from 'lucide-react';
 import { taskService, authService } from '../lib/firebase';
 
 // Themes
@@ -1131,6 +1131,9 @@ Return ONLY JSON:
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       color: theme.text,
       transition: 'background-color 0.3s, color 0.3s',
+      overflowX: 'hidden',
+      width: '100%',
+      maxWidth: '100vw',
     }}>
       <style>{`
         @keyframes fall {
@@ -1187,9 +1190,6 @@ Return ONLY JSON:
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        position: 'sticky',
-        top: 0,
-        zIndex: 50,
         backgroundColor: theme.bg,
       }}>
         <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1233,7 +1233,7 @@ Return ONLY JSON:
       </header>
 
       {/* Main */}
-      <main style={{ maxWidth: 550, margin: '0 auto', padding: '24px 20px 140px' }}>
+      <main style={{ maxWidth: 550, margin: '0 auto', padding: '24px 20px 140px', width: '100%', boxSizing: 'border-box' }}>
         
         {/* NOW Tab */}
         {activeTab === 'now' && (
@@ -1768,11 +1768,11 @@ Return ONLY JSON:
                           style={{
                             display: 'flex',
                             alignItems: 'center',
-                            padding: '18px 20px',
+                            padding: '18px 16px 18px 8px',
                             backgroundColor: theme.cardBg,
                             borderRadius: 12,
                             marginBottom: 6,
-                            gap: 14,
+                            gap: 10,
                             boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
                             cursor: 'grab',
                             opacity: draggedTask?.id === task.id ? 0.4 : 1,
@@ -1781,6 +1781,21 @@ Return ONLY JSON:
                             animation: completingTaskId === task.id ? 'taskComplete 0.3s ease-out forwards' : 'none',
                           }}
                         >
+                          {/* Drag handle */}
+                          <div 
+                            style={{ 
+                              padding: '8px 4px', 
+                              cursor: 'grab',
+                              touchAction: 'none',
+                              color: theme.textMuted,
+                            }}
+                            onTouchStart={(e) => {
+                              e.stopPropagation();
+                              handleDragStart(e, task, section.key);
+                            }}
+                          >
+                            <GripVertical size={18} />
+                          </div>
                           <button onClick={(e) => { e.stopPropagation(); completeTask(task.id); }} style={{
                             width: 24,
                             height: 24,
@@ -2001,7 +2016,7 @@ Return ONLY JSON:
       {/* Bottom Nav */}
       <nav style={{
         position: 'fixed',
-        bottom: 24,
+        bottom: 'max(24px, env(safe-area-inset-bottom, 24px))',
         left: '50%',
         transform: 'translateX(-50%)',
         backgroundColor: theme.cardBg,
@@ -2594,7 +2609,7 @@ function ChatModal({ theme, onClose, onParseTasks, onAddTask, onMergeTask }) {
         backgroundColor: 'rgba(0,0,0,0.6)',
         zIndex: 100,
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'flex-end',
         justifyContent: 'center',
         backdropFilter: 'blur(8px)',
       }}
@@ -2603,16 +2618,15 @@ function ChatModal({ theme, onClose, onParseTasks, onAddTask, onMergeTask }) {
         onClick={e => e.stopPropagation()}
         style={{
           backgroundColor: '#0D0C0E',
-          borderRadius: 24,
-          width: 480,
-          maxWidth: '95%',
-          height: '70vh',
-          maxHeight: 600,
+          borderRadius: '24px 24px 0 0',
+          width: '100%',
+          maxWidth: 480,
+          height: '95vh',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
           position: 'relative',
-          boxShadow: '0 25px 50px rgba(0,0,0,0.5)',
+          boxShadow: '0 -10px 50px rgba(0,0,0,0.5)',
         }}
       >
         {/* Stars background */}
@@ -2811,17 +2825,17 @@ function SettingsModal({ theme, settings, onSave, onClose, user, onSendMagicLink
       backgroundColor: 'rgba(0,0,0,0.6)',
       zIndex: 100,
       display: 'flex',
-      alignItems: 'center',
+      alignItems: 'flex-end',
       justifyContent: 'center',
       backdropFilter: 'blur(8px)',
     }}>
       <div style={{
         backgroundColor: theme.cardBg,
-        borderRadius: 20,
+        borderRadius: '24px 24px 0 0',
         padding: 32,
-        width: 400,
-        maxWidth: '95%',
-        maxHeight: '90vh',
+        width: '100%',
+        maxWidth: 480,
+        height: '95vh',
         overflowY: 'auto',
       }}>
         <div style={{
@@ -2998,5 +3012,6 @@ function SettingsModal({ theme, settings, onSave, onClose, user, onSendMagicLink
     </div>
   );
 }
+
 
 
