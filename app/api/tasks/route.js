@@ -1,17 +1,18 @@
-import { initializeApp, getApps, cert } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { initializeApp, getApps } from 'firebase/app';
+import { getFirestore, collection, addDoc, getDocs, query, where } from 'firebase/firestore';
 
-// Initialize Firebase Admin (for server-side)
-// Note: For production, use service account credentials
-const adminConfig = {
+const firebaseConfig = {
+  apiKey: "AIzaSyCh0aN6A6-RCGNQXMbUkVOaGWxkGoXaB-s",
+  authDomain: "adhdo-955f2.firebaseapp.com",
   projectId: "adhdo-955f2",
+  storageBucket: "adhdo-955f2.firebasestorage.app",
+  messagingSenderId: "633004346244",
+  appId: "1:633004346244:web:702a7fda5e5892ee50ebd1"
 };
 
-if (getApps().length === 0) {
-  initializeApp(adminConfig);
-}
-
-const db = getFirestore();
+// Initialize Firebase
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+const db = getFirestore(app);
 
 export async function POST(request) {
   try {
@@ -38,7 +39,7 @@ export async function POST(request) {
       subtasks: subtasks || [],
     };
 
-    const docRef = await db.collection('tasks').add(task);
+    const docRef = await addDoc(collection(db, 'tasks'), task);
 
     return Response.json({
       success: true,
@@ -65,10 +66,8 @@ export async function GET(request) {
       );
     }
 
-    const snapshot = await db.collection('tasks')
-      .where('deviceId', '==', deviceId)
-      .get();
-
+    const q = query(collection(db, 'tasks'), where('deviceId', '==', deviceId));
+    const snapshot = await getDocs(q);
     const tasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
     return Response.json({ tasks });
