@@ -195,12 +195,14 @@ export default function ADHDo() {
   const [completingTaskId, setCompletingTaskId] = useState(null);
   const [showMiniConfetti, setShowMiniConfetti] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const loadingMantraRef = useRef(loadingMantras[Math.floor(Math.random() * loadingMantras.length)]);
+  const loadingMantraRef = useRef('');
   const deviceIdRef = useRef(null);
 
   // Set mounted after first render (client-side only)
   useEffect(() => {
     setMounted(true);
+    // Set random mantra only on client
+    loadingMantraRef.current = loadingMantras[Math.floor(Math.random() * loadingMantras.length)];
   }, []);
 
   const hour = new Date().getHours();
@@ -1065,6 +1067,21 @@ Return ONLY JSON:
   const weekTasks = sortWithCustomOrder(tasks.filter(t => !t.completed && t.doDate > tomorrow && t.doDate <= weekEnd), 'week');
   const laterTasks = sortWithCustomOrder(tasks.filter(t => !t.completed && t.doDate > weekEnd), 'later');
   const remaining = tasks.filter(t => !t.completed).length;
+
+  // Show minimal loading state during SSR/hydration
+  if (!mounted) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        backgroundColor: '#F5F3F0',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}>
+        <p style={{ color: '#999', fontSize: 17 }}>Loading...</p>
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -2813,3 +2830,4 @@ function SettingsModal({ theme, settings, onSave, onClose }) {
     </div>
   );
 }
+
