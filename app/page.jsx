@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, Inbox, Calendar, Timer, Sunrise, Copy, Settings, RefreshCw, Sparkles, List, Mail, LogOut, User, GripVertical } from 'lucide-react';
+import { Clock, Phone, Link, MapPin, FileText, Flame, Sun, Moon, CloudRain, CloudSnow, Cloud, Zap, Plus, Check, X, ChevronDown, ChevronUp, Inbox, Calendar, Timer, Sunrise, Copy, Settings, RefreshCw, Sparkles, List, Mail, LogOut, User, GripVertical } from 'lucide-react';
 import { taskService, authService } from '../lib/firebase';
 
 // Themes
@@ -200,6 +200,7 @@ export default function ADHDo() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [reorderingTaskId, setReorderingTaskId] = useState(null);
   const loadingMantraRef = useRef('');
   const deviceIdRef = useRef(null);
 
@@ -1018,6 +1019,25 @@ Return ONLY JSON:
     setDragOverIndex(null);
   };
 
+  // Move task up or down within a section (for touch devices)
+  const moveTask = (taskId, sectionKey, direction) => {
+    const sectionTasks = getSectionTasks(sectionKey);
+    const taskIds = sectionTasks.map(t => t.id);
+    const currentIndex = taskIds.indexOf(taskId);
+    
+    if (currentIndex === -1) return;
+    
+    const newIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    
+    // Check bounds
+    if (newIndex < 0 || newIndex >= taskIds.length) return;
+    
+    // Swap positions
+    [taskIds[currentIndex], taskIds[newIndex]] = [taskIds[newIndex], taskIds[currentIndex]];
+    
+    setCustomOrder(prev => ({ ...prev, [sectionKey]: taskIds }));
+  };
+
   // Get tasks for a section with custom ordering
   const getSectionTasks = (sectionKey) => {
     let sectionTasks;
@@ -1140,7 +1160,9 @@ Return ONLY JSON:
   }
 
   return (
-    <div style={{
+    <div 
+      onClick={() => reorderingTaskId && setReorderingTaskId(null)}
+      style={{
       minHeight: '100vh',
       backgroundColor: theme.bg,
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
@@ -1776,41 +1798,80 @@ Return ONLY JSON:
                           }}
                         />
                         <div 
-                          draggable
-                          onDragStart={(e) => handleDragStart(e, task, section.key)}
-                          onDragEnd={handleDragEnd}
-                          onClick={() => setSelectedTask(task)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (reorderingTaskId !== task.id) {
+                              setReorderingTaskId(null);
+                              setSelectedTask(task);
+                            }
+                          }}
                           style={{
                             display: 'flex',
                             alignItems: 'center',
                             padding: '18px 16px 18px 8px',
-                            backgroundColor: theme.cardBg,
+                            backgroundColor: reorderingTaskId === task.id ? (isEvening ? '#1a1a1a' : '#e8e6e3') : theme.cardBg,
                             borderRadius: 12,
                             marginBottom: 6,
                             gap: 10,
                             boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-                            cursor: 'grab',
-                            opacity: draggedTask?.id === task.id ? 0.4 : 1,
-                            transform: draggedTask?.id === task.id ? 'scale(0.98)' : 'scale(1)',
-                            transition: 'opacity 0.15s, transform 0.15s',
+                            transition: 'all 0.15s ease',
                             animation: completingTaskId === task.id ? 'taskComplete 0.3s ease-out forwards' : 'none',
+                            border: reorderingTaskId === task.id ? `2px solid ${theme.accent}` : '2px solid transparent',
                           }}
                         >
-                          {/* Drag handle */}
-                          <div 
-                            style={{ 
-                              padding: '8px 4px', 
-                              cursor: 'grab',
-                              touchAction: 'none',
-                              color: theme.textMuted,
-                            }}
-                            onTouchStart={(e) => {
-                              e.stopPropagation();
-                              handleDragStart(e, task, section.key);
-                            }}
-                          >
-                            <GripVertical size={18} />
-                          </div>
+                          {/* Reorder controls */}
+                          {reorderingTaskId === task.id ? (
+                            <div style={{ 
+                              display: 'flex', 
+                              flexDirection: 'column', 
+                              gap: 2,
+                            }}>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); moveTask(task.id, section.key, 'up'); }}
+                                style={{
+                                  padding: 4,
+                                  background: theme.bg,
+                                  border: `1px solid ${theme.border}`,
+                                  borderRadius: 6,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <ChevronUp size={16} color={theme.text} />
+                              </button>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); moveTask(task.id, section.key, 'down'); }}
+                                style={{
+                                  padding: 4,
+                                  background: theme.bg,
+                                  border: `1px solid ${theme.border}`,
+                                  borderRadius: 6,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <ChevronDown size={16} color={theme.text} />
+                              </button>
+                            </div>
+                          ) : (
+                            <div 
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                setReorderingTaskId(reorderingTaskId === task.id ? null : task.id);
+                              }}
+                              style={{ 
+                                padding: '8px 4px', 
+                                cursor: 'pointer',
+                                color: theme.textMuted,
+                              }}
+                            >
+                              <GripVertical size={18} />
+                            </div>
+                          )}
                           <button onClick={(e) => { e.stopPropagation(); completeTask(task.id); }} style={{
                             width: 24,
                             height: 24,
