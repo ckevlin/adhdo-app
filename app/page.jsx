@@ -1040,6 +1040,21 @@ Return ONLY JSON:
       default:
         sectionTasks = [];
     }
+    
+    // Apply custom order if exists
+    const order = customOrder[sectionKey];
+    if (order && order.length > 0) {
+      sectionTasks.sort((a, b) => {
+        const aIndex = order.indexOf(a.id);
+        const bIndex = order.indexOf(b.id);
+        // Tasks not in order go to the end
+        if (aIndex === -1 && bIndex === -1) return 0;
+        if (aIndex === -1) return 1;
+        if (bIndex === -1) return -1;
+        return aIndex - bIndex;
+      });
+    }
+    
     return sectionTasks;
   };
 
